@@ -62,11 +62,13 @@ jobs:
           [path] = glob.glob("oshioki--*.bottle*.json")
           data = json.load(open(path))
           bottle = next(iter(data.values()))["bottle"]
+          # Newer brew nests per-tag info under "tags"; older brew used "files".
+          entries = bottle.get("tags") or bottle.get("files")
           lines = ["  bottle do"]
           lines.append(f'    root_url "{bottle["root_url"]}"')
           if rebuild:
               lines.append(f"    rebuild {rebuild}")
-          for btag, info in bottle["files"].items():
+          for btag, info in entries.items():
               lines.append(f'    sha256 cellar: :any, {btag}: "{info["sha256"]}"')
           lines.append("  end")
           block = "\n".join(lines)
