@@ -48,7 +48,19 @@ jobs:
           brew install --build-bottle epsalmond/oshioki/oshioki
           brew bottle --json --root-url="$ROOT_URL" epsalmond/oshioki/oshioki
       - name: Upload the bottle to the release
-        run: gh release upload "$TAG" oshioki--*.bottle*.tar.gz --repo epsalmond/oshioki --clobber
+        run: |
+          # brew pours <name>--<version>... but installs request
+          # <name>-<version>..., so rename to the canonical name first.
+          for f in oshioki--*.bottle*.tar.gz; do
+            canonical="$(printf '%s' "$f" | sed 's/^oshioki--/oshioki-/')"
+            [ "$f" = "$canonical" ] || mv "$f" "$canonical"
+          done
+          # Drop stale bottles: every pour has fresh timestamps, so only
+          # this run's artifact may be published.
+          for a in $(gh release view "$TAG" --repo epsalmond/oshioki --json assets --jq '.assets[] | select(.name | test("oshioki-.*[.]bottle.*[.]tar[.]gz$")) | .name'); do
+            gh release delete-asset "$TAG" "$a" --repo epsalmond/oshioki -y
+          done
+          gh release upload "$TAG" oshioki-*.bottle*.tar.gz --repo epsalmond/oshioki
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - name: Merge the bottle block and push
