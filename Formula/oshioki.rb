@@ -5,6 +5,12 @@ class Oshioki < Formula
   # time a release is bottled. Do not hand-edit them.
   url "https://github.com/epsalmond/oshioki/releases/download/v0.1.0/oshioki-macos-arm64-0.1.0.tar.gz"
   sha256 "8a1e7e060e9762ce4a1c228c705913972e0c6af9cc8b0956153c31ab751c143f"
+
+  bottle do
+    root_url "https://github.com/epsalmond/oshioki/releases/download/v0.1.0"
+    rebuild 1
+    sha256 cellar: :any, arm64_sonoma: "7e9379722a70550617a457d3ede01345f9c27faf758ef63b472bdac848c3f498"
+  end
   version "0.1.0"
   license any_of: ["MIT", "Apache-2.0"]
 
