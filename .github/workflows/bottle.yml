@@ -69,21 +69,15 @@ jobs:
           for btag, info in bottle["files"].items():
               lines.append(f'    sha256 cellar: :any, {btag}: "{info["sha256"]}"')
           lines.append("  end")
-          block = "
-".join(lines)
+          block = "\n".join(lines)
           formula = "Formula/oshioki.rb"
           src = open(formula).read()
-          if re.search(r"  bottle do.*?  end
-", src, flags=re.S):
-              src = re.sub(r"  bottle do.*?  end
-", block + "
-", src, flags=re.S)
+          if re.search(r"  bottle do.*?  end\n", src, flags=re.S):
+              src = re.sub(r"  bottle do.*?  end\n", block + "\n", src, flags=re.S)
           else:
               # First bottling: no block yet, insert it after the sha256 line.
               src = re.sub(r'(^  sha256 ".*"$)',
-                           r"
-
-" + block, src, flags=re.M)
+                           r"\1\n\n" + block, src, flags=re.M)
           open(formula, "w").write(src)
           PYEOF
           git config user.name "oshioki-bottle-bot"
