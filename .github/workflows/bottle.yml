@@ -40,7 +40,8 @@ jobs:
           git config user.name "oshioki-bottle-bot"
           git config user.email "oshioki-bottle-bot@users.noreply.github.com"
           git add Formula/oshioki.rb
-          git commit -m "Point formula at ${TAG}" && git push
+          if ! git diff --cached --quiet; then git commit -m "Point formula at ${TAG}"; fi
+          git push
       - name: Bottle the formula
         run: |
           # Fresh auto-tap picks up the pushed formula, not this checkout.
@@ -68,18 +69,25 @@ jobs:
           for btag, info in bottle["files"].items():
               lines.append(f'    sha256 cellar: :any, {btag}: "{info["sha256"]}"')
           lines.append("  end")
-          block = "\n".join(lines)
+          block = "
+".join(lines)
           formula = "Formula/oshioki.rb"
           src = open(formula).read()
-          if re.search(r"  bottle do.*?  end\n", src, flags=re.S):
-              src = re.sub(r"  bottle do.*?  end\n", block + "\n", src, flags=re.S)
+          if re.search(r"  bottle do.*?  end
+", src, flags=re.S):
+              src = re.sub(r"  bottle do.*?  end
+", block + "
+", src, flags=re.S)
           else:
               # First bottling: no block yet, insert it after the sha256 line.
               src = re.sub(r'(^  sha256 ".*"$)',
-                           r"\1\n\n" + block, src, flags=re.M)
+                           r"
+
+" + block, src, flags=re.M)
           open(formula, "w").write(src)
           PYEOF
           git config user.name "oshioki-bottle-bot"
           git config user.email "oshioki-bottle-bot@users.noreply.github.com"
           git add Formula/oshioki.rb
-          git commit -m "Bottle ${{ inputs.tag }}" && git push
+          if ! git diff --cached --quiet; then git commit -m "Bottle ${{ inputs.tag }}"; fi
+          git push
