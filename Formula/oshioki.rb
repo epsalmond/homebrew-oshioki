@@ -4,7 +4,7 @@ class Oshioki < Formula
   # URL, sha256, and version are filled in by the bottle workflow the first
   # time a release is bottled. Do not hand-edit them.
   url "https://github.com/epsalmond/oshioki/releases/download/v0.1.0/oshioki-macos-arm64-0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "8a1e7e060e9762ce4a1c228c705913972e0c6af9cc8b0956153c31ab751c143f"
   version "0.1.0"
   license any_of: ["MIT", "Apache-2.0"]
 
