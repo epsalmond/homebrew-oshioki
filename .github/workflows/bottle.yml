@@ -48,14 +48,7 @@ jobs:
           brew install --build-bottle epsalmond/oshioki/oshioki
           brew bottle --json --root-url="$ROOT_URL" epsalmond/oshioki/oshioki
       - name: Upload the bottle to the release
-        run: |
-          # brew pours <name>--<version>... but installs request
-          # <name>-<version>..., so rename to the canonical name first.
-          for f in oshioki--*.bottle*.tar.gz; do
-            canonical="$(printf '%s' "$f" | sed 's/^oshioki--/oshioki-/')"
-            [ "$f" = "$canonical" ] || mv "$f" "$canonical"
-          done
-          gh release upload "$TAG" oshioki-*.bottle*.tar.gz --repo epsalmond/oshioki --clobber
+        run: gh release upload "$TAG" oshioki--*.bottle*.tar.gz --repo epsalmond/oshioki --clobber
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - name: Merge the bottle block and push
@@ -63,10 +56,10 @@ jobs:
           git pull --rebase
           python3 - <<'PYEOF'
           import glob, json, re
-          [tarball] = glob.glob("oshioki--*.bottle*.tar.gz")
+          [tarball] = glob.glob("oshioki-*.bottle*.tar.gz")
           m = re.search(r"\.bottle(?:\.(\d+))?\.tar\.gz$", tarball)
           rebuild = int(m.group(1) or 0)
-          [path] = glob.glob("oshioki--*.bottle*.json")
+          [path] = glob.glob("oshioki-*.bottle*.json")
           data = json.load(open(path))
           bottle = next(iter(data.values()))["bottle"]
           # Newer brew nests per-tag info under "tags"; older brew used "files".
