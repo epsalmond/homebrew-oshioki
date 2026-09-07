@@ -15,7 +15,7 @@ class Oshioki < Formula
   license any_of: ["MIT", "Apache-2.0"]
 
   def install
-    bin.install "oshioki", "oshioki-agent", "install-oshioki-hook"
+    bin.install "oshioki", "oshioki-agent", "install-oshioki-hook", "oshioki-laptop-setup"
     libexec.install "oshioki.dylib", "SHA256SUMS", "manifest.json"
   end
 
