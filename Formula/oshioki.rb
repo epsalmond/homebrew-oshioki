@@ -19,6 +19,17 @@ class Oshioki < Formula
     libexec.install "oshioki.dylib", "SHA256SUMS", "manifest.json"
   end
 
+  # Pouring a relocatable bottle rewrites the plugin's install name to the
+  # Cellar path and re-signs it, so the manifest built in CI no longer
+  # matches what is on disk and install-oshioki-hook refuses the plugin.
+  # Brew has verified the bottle itself by now; the manifest is regenerated
+  # from the installed files so the installer checks those.
+  def post_install
+    sums = %w[oshioki oshioki-agent install-oshioki-hook oshioki-laptop-setup].map { |f| bin/f } +
+           %w[oshioki.dylib manifest.json].map { |f| libexec/f }
+    (libexec/"SHA256SUMS").atomic_write(sums.map { |f| "#{Digest::SHA256.file(f).hexdigest}  #{f.basename}\n" }.join)
+  end
+
   def caveats
     <<~EOS
       The sudo plugin and hook state live outside the Cellar and need root.
