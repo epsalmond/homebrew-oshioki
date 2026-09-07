@@ -24,7 +24,7 @@ class Oshioki < Formula
   # matches what is on disk and install-oshioki-hook refuses the plugin.
   # Brew has verified the bottle itself by now; the manifest is regenerated
   # from the installed files so the installer checks those.
-  def post_install
+  def post_install_steps
     sums = %w[oshioki oshioki-agent install-oshioki-hook oshioki-laptop-setup].map { |f| bin/f } +
            %w[oshioki.dylib manifest.json].map { |f| libexec/f }
     (libexec/"SHA256SUMS").atomic_write(sums.map { |f| "#{Digest::SHA256.file(f).hexdigest}  #{f.basename}\n" }.join)
