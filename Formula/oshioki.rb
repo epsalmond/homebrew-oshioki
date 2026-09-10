@@ -7,9 +7,9 @@ class Oshioki < Formula
   sha256 "51c04c85dbfea0957a8337a1d81eabb5f01657db679ae7571a3cb579727a268e"
 
   bottle do
-    root_url "https://github.com/epsalmond/oshioki/releases/download/v0.1.3"
-    rebuild 4
-    sha256 cellar: :any, arm64_sonoma: "e1db20d4f4d34853e94d3835b769f206283842f100f436bb46caa7e42df1c228"
+    root_url "https://github.com/epsalmond/oshioki/releases/download/v0.1.4"
+    rebuild 5
+    sha256 cellar: :any, arm64_sonoma: "2aed7df2e375ced5d3f84fc0c0d36e6bd6179ca76ad919e8a76d1fbb97ac6c7e"
   end
   version "0.1.4"
   license any_of: ["MIT", "Apache-2.0"]
