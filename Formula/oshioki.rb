@@ -18,13 +18,18 @@ class Oshioki < Formula
 
   # The release tarball is already built: this formula only lays its files out
   # in the keg, so --build-from-source and a bottle pour install identical
-  # bytes and there is no cargo build here to point at a prefix. The two
-  # Mach-O files in libexec carry /opt/homebrew/opt/oshioki/libexec/<name> as
-  # their install name, set at link time upstream, so Homebrew's keg fixup
-  # finds nothing to rewrite and the SHA256SUMS shipped beside them still
-  # verifies (oshioki issue #87). A non-default Homebrew prefix would need a
-  # tarball rebuilt with OSHIOKI_PAM_INSTALL_NAME/OSHIOKI_PLUGIN_INSTALL_NAME
-  # set; only the default arm64 prefix is supported here.
+  # bytes and there is no cargo build here to point at a prefix.
+  #
+  # From v0.1.8 onward the two Mach-O files in libexec carry
+  # /opt/homebrew/opt/oshioki/libexec/<name> as their install name, set at
+  # link time upstream (oshioki PR #89), so Homebrew's keg fixup finds nothing
+  # to rewrite and the SHA256SUMS shipped beside them still verifies (oshioki
+  # issue #87). Earlier tarballs, 0.1.7 included, do not: a bottle of one of
+  # those still fails checksum verification whatever this formula says, so the
+  # bottle has to be rebuilt from a release that includes that PR. A
+  # non-default Homebrew prefix would need a tarball rebuilt with
+  # OSHIOKI_PAM_INSTALL_NAME/OSHIOKI_PLUGIN_INSTALL_NAME set; only the default
+  # arm64 prefix is supported here.
   def install
     bin.install "oshioki", "oshioki-agent", "install-oshioki-hook", "oshioki-laptop-setup"
     # Older release archives predate phone setup. The next release includes
