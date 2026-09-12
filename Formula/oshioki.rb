@@ -24,6 +24,8 @@ class Oshioki < Formula
       bin.install name if File.exist?(name)
     end
     libexec.install "oshioki.dylib", "SHA256SUMS", "manifest.json"
+    # Older release archives predate the contextual PAM module.
+    libexec.install "liboshioki_pam.dylib" if File.exist?("liboshioki_pam.dylib")
   end
 
   def caveats
