@@ -16,6 +16,20 @@ class Oshioki < Formula
 
   depends_on "python@3.14"
 
+  # The release tarball is already built: this formula only lays its files out
+  # in the keg, so --build-from-source and a bottle pour install identical
+  # bytes and there is no cargo build here to point at a prefix.
+  #
+  # From v0.1.8 onward the two Mach-O files in libexec carry
+  # /opt/homebrew/opt/oshioki/libexec/<name> as their install name, set at
+  # link time upstream (oshioki PR #89), so Homebrew's keg fixup finds nothing
+  # to rewrite and the SHA256SUMS shipped beside them still verifies (oshioki
+  # issue #87). Earlier tarballs, 0.1.7 included, do not: a bottle of one of
+  # those still fails checksum verification whatever this formula says, so the
+  # bottle has to be rebuilt from a release that includes that PR. A
+  # non-default Homebrew prefix would need a tarball rebuilt with
+  # OSHIOKI_PAM_INSTALL_NAME/OSHIOKI_PLUGIN_INSTALL_NAME set; only the default
+  # arm64 prefix is supported here.
   def install
     bin.install "oshioki", "oshioki-agent", "install-oshioki-hook", "oshioki-laptop-setup"
     # Older release archives predate phone setup. The next release includes
@@ -31,7 +45,13 @@ class Oshioki < Formula
   def caveats
     <<~EOS
       The sudo plugin and hook state live outside the Cellar and need root.
-      To wire them up, create /etc/oshioki/install.env (0600, root-owned;
+      Run setup as yourself, not under sudo; it elevates once by itself and
+      finds this keg's binaries, module and SHA256SUMS on its own:
+        oshioki-laptop-setup
+      Add --contextual-pam to authenticate sudo through PAM instead of the
+      approval plugin. Keep a second root shell open while that runs.
+      To drive the installer by hand instead, create /etc/oshioki/install.env
+      (0600, root-owned;
       see https://github.com/epsalmond/oshioki/blob/main/RUNBOOK.md),
       then run:
         sudo HOOK_BIN=#{bin}/oshioki \\

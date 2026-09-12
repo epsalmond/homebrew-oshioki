@@ -46,7 +46,13 @@ jobs:
         run: |
           # Fresh auto-tap picks up the pushed formula, not this checkout.
           brew install --build-bottle epsalmond/oshioki/oshioki
-          brew bottle --json --root-url="$ROOT_URL" epsalmond/oshioki/oshioki
+          # --skip-relocation: the tap bottles arm64 only and Apple silicon
+          # Homebrew is always at /opt/homebrew, so there is no prefix to
+          # relocate. It also keeps the pour from re-writing and re-signing
+          # the two Mach-O files in libexec, whose bytes have to keep matching
+          # the SHA256SUMS shipped beside them (oshioki issue #87).
+          brew bottle --skip-relocation --json --root-url="$ROOT_URL" \
+            epsalmond/oshioki/oshioki
       - name: Upload the bottle to the release
         run: |
           # brew pours <name>--<version>... but installs request
@@ -80,8 +86,25 @@ jobs:
           lines.append(f'    root_url "{bottle["root_url"]}"')
           if rebuild:
               lines.append(f"    rebuild {rebuild}")
+          # Take the cellar brew actually decided on rather than hard-coding
+          # it: with --skip-relocation that is any_skip_relocation, and a
+          # formula that claimed plain :any would send Homebrew back through
+          # the relocation pass this bottle exists to avoid (oshioki issue
+          # #87). `brew bottle --json` writes it once on the bottle object
+          # beside root_url, not per tag (dev-cmd/bottle.rb: "cellar" =>
+          # bottle_cellar.to_s), and .to_s strips the leading colon a
+          # symbolic name would carry. Only the merge path copies it down
+          # into each tag, and nothing here merges. A missing value means the
+          # JSON shape moved, which would silently reinstate :any -- fail
+          # instead.
+          cellar = bottle.get("cellar")
+          if not cellar:
+              raise SystemExit("brew bottle JSON has no cellar; check the JSON shape")
+          # Symbolic names go in bare with a colon; an absolute Cellar path
+          # is a string and gets quoted.
+          cellar = f":{cellar}" if not cellar.startswith("/") else f'"{cellar}"'
           for btag, info in entries.items():
-              lines.append(f'    sha256 cellar: :any, {btag}: "{info["sha256"]}"')
+              lines.append(f'    sha256 cellar: {cellar}, {btag}: "{info["sha256"]}"')
           lines.append("  end")
           block = "\n".join(lines)
           formula = "Formula/oshioki.rb"
