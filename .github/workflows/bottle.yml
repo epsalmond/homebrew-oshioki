@@ -46,7 +46,13 @@ jobs:
         run: |
           # Fresh auto-tap picks up the pushed formula, not this checkout.
           brew install --build-bottle epsalmond/oshioki/oshioki
-          brew bottle --json --root-url="$ROOT_URL" epsalmond/oshioki/oshioki
+          # --skip-relocation: the tap bottles arm64 only and Apple silicon
+          # Homebrew is always at /opt/homebrew, so there is no prefix to
+          # relocate. It also keeps the pour from re-writing and re-signing
+          # the two Mach-O files in libexec, whose bytes have to keep matching
+          # the SHA256SUMS shipped beside them (oshioki issue #87).
+          brew bottle --skip-relocation --json --root-url="$ROOT_URL" \
+            epsalmond/oshioki/oshioki
       - name: Upload the bottle to the release
         run: |
           # brew pours <name>--<version>... but installs request
@@ -81,7 +87,16 @@ jobs:
           if rebuild:
               lines.append(f"    rebuild {rebuild}")
           for btag, info in entries.items():
-              lines.append(f'    sha256 cellar: :any, {btag}: "{info["sha256"]}"')
+              # Take the cellar brew actually decided on rather than
+              # hard-coding it: with --skip-relocation that is
+              # :any_skip_relocation, and a formula that claimed plain :any
+              # would send Homebrew back through the relocation pass this
+              # bottle exists to avoid (oshioki issue #87). Symbolic values
+              # arrive with a leading ":"; an absolute Cellar path does not
+              # and has to be quoted.
+              cellar = info.get("cellar", ":any_skip_relocation")
+              cellar = cellar if cellar.startswith(":") else f'"{cellar}"'
+              lines.append(f'    sha256 cellar: {cellar}, {btag}: "{info["sha256"]}"')
           lines.append("  end")
           block = "\n".join(lines)
           formula = "Formula/oshioki.rb"
