@@ -61,6 +61,11 @@ class Oshioki < Formula
       finds the hook, the sudo plugin, the PAM module and SHA256SUMS on its
       own, so HOOK_BIN, PLUGIN_BIN, PAM_MODULE_BIN and OSHIOKI_CHECKSUMS are
       no longer needed.
+      The Mac agent's own NATS credentials are optional. Set
+      OSHIOKI_AGENT_NATS_URL, OSHIOKI_AGENT_NATS_USER and
+      OSHIOKI_AGENT_NATS_PASS (in install.env, or in the environment for one
+      run) so approvals raised on other hosts reach this Mac. Left unset, the
+      agent is socket-only: it only answers sudo started on this machine.
       To check what is live against this keg's SHA256SUMS:
         sudo install-oshioki-hook --contextual-pam-status
       Releases with phone setup include oshioki-server and oshioki-phone-setup.
