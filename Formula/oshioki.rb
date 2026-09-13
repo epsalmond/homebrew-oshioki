@@ -43,7 +43,8 @@ class Oshioki < Formula
     # oshioki-agent from the same build, ad hoc signed, and hashed in
     # SHA256SUMS under Oshioki.app/Contents/MacOS/oshioki-agent; setup
     # verifies it against that entry before preferring it. Release archives
-    # before 0.1.12 have no bundle and keep the flat binary.
+    # from before the bundle was packaged have no Oshioki.app and no such
+    # entry, and setup keeps the flat binary for those.
     prefix.install "Oshioki.app" if File.exist?("Oshioki.app")
     libexec.install "oshioki.dylib", "SHA256SUMS", "manifest.json"
     # Older release archives predate the contextual PAM module.
@@ -56,8 +57,9 @@ class Oshioki < Formula
       Run setup as yourself, not under sudo; it elevates once by itself and
       finds this keg's binaries, module and SHA256SUMS on its own:
         oshioki-laptop-setup
-      From 0.1.12 the keg carries Oshioki.app and setup runs the agent from
-      inside it, so the Touch ID sheet shows the Oshioki name and icon.
+      From releases that include Oshioki.app the keg carries it and setup runs
+      the agent from inside it, so the Touch ID sheet shows the Oshioki name
+      and icon.
       Add --contextual-pam to authenticate sudo through PAM instead of the
       approval plugin. Keep a second root shell open while that runs.
       To drive the installer by hand instead, create /etc/oshioki/install.env
