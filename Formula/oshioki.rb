@@ -53,16 +53,15 @@ class Oshioki < Formula
       To drive the installer by hand instead, create /etc/oshioki/install.env
       (0600, root-owned;
       see https://github.com/epsalmond/oshioki/blob/main/RUNBOOK.md),
-      then run:
-        sudo HOOK_BIN=#{bin}/oshioki \\
-          PLUGIN_BIN=#{libexec}/oshioki.dylib \\
-          install-oshioki-hook --prelaunch \\
+      then run, with no environment at all:
+        sudo install-oshioki-hook --contextual-pam
+        sudo install-oshioki-hook --prelaunch \\
           --config-file /etc/oshioki/install.env
-      From 0.1.9 the scripts resolve their own keg through the bin symlink,
-      so OSHIOKI_CHECKSUMS is no longer needed; the installer still wants
-      HOOK_BIN and PLUGIN_BIN pointed at the files to install.
-      To check what is live against this keg's SHA256SUMS, with no
-      environment at all:
+      From 0.1.10 the installer resolves this keg through the bin symlink and
+      finds the hook, the sudo plugin, the PAM module and SHA256SUMS on its
+      own, so HOOK_BIN, PLUGIN_BIN, PAM_MODULE_BIN and OSHIOKI_CHECKSUMS are
+      no longer needed.
+      To check what is live against this keg's SHA256SUMS:
         sudo install-oshioki-hook --contextual-pam-status
       Releases with phone setup include oshioki-server and oshioki-phone-setup.
       To enroll a phone, install nats-server and run as yourself:
