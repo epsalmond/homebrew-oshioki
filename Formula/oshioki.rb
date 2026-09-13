@@ -3,15 +3,15 @@ class Oshioki < Formula
   homepage "https://github.com/epsalmond/oshioki"
   # URL, sha256, and version are filled in by the bottle workflow the first
   # time a release is bottled. Do not hand-edit them.
-  url "https://github.com/epsalmond/oshioki/releases/download/v0.1.10/oshioki-macos-arm64-0.1.10.tar.gz"
-  sha256 "c726f3ec5ea2d18d8c2900d2aeb4661e698945367fa28f947dc671df988ec813"
+  url "https://github.com/epsalmond/oshioki/releases/download/v0.1.11/oshioki-macos-arm64-0.1.11.tar.gz"
+  sha256 "7b82c11f03eb8f7cbda08b655e7fed82fd9ac4cc834f0f7c0d282947d3522c63"
 
   bottle do
     root_url "https://github.com/epsalmond/oshioki/releases/download/v0.1.10"
     rebuild 12
     sha256 cellar: :any_skip_relocation, arm64_sonoma: "c296fcdec7f03bb08ed45fbf76ca555fc470f883504d68f6239982d9dcd8f4c7"
   end
-  version "0.1.10"
+  version "0.1.11"
   license any_of: ["MIT", "Apache-2.0"]
 
   depends_on "python@3.14"
