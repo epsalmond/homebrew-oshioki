@@ -37,6 +37,15 @@ class Oshioki < Formula
     %w[oshioki-server oshioki-phone-setup].each do |name|
       bin.install name if File.exist?(name)
     end
+    # The Touch ID sheet takes its name and icon from the calling process's
+    # app bundle, so the agent oshioki-laptop-setup starts has to run from
+    # inside Oshioki.app. Its inner binary is a copy of the flat
+    # oshioki-agent from the same build, ad hoc signed, and hashed in
+    # SHA256SUMS under Oshioki.app/Contents/MacOS/oshioki-agent; setup
+    # verifies it against that entry before preferring it. Release archives
+    # from before the bundle was packaged have no Oshioki.app and no such
+    # entry, and setup keeps the flat binary for those.
+    prefix.install "Oshioki.app" if File.exist?("Oshioki.app")
     libexec.install "oshioki.dylib", "SHA256SUMS", "manifest.json"
     # Older release archives predate the contextual PAM module.
     libexec.install "liboshioki_pam.dylib" if File.exist?("liboshioki_pam.dylib")
@@ -48,6 +57,9 @@ class Oshioki < Formula
       Run setup as yourself, not under sudo; it elevates once by itself and
       finds this keg's binaries, module and SHA256SUMS on its own:
         oshioki-laptop-setup
+      From releases that include Oshioki.app the keg carries it and setup runs
+      the agent from inside it, so the Touch ID sheet shows the Oshioki name
+      and icon.
       Add --contextual-pam to authenticate sudo through PAM instead of the
       approval plugin. Keep a second root shell open while that runs.
       To drive the installer by hand instead, create /etc/oshioki/install.env
