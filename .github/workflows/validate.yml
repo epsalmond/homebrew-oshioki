@@ -58,6 +58,7 @@ jobs:
         run: |
           brew bottle --skip-relocation --json epsalmond/oshioki-ci/oshioki
           brew uninstall --force epsalmond/oshioki-ci/oshioki
+          brew trust --formula epsalmond/oshioki-ci/oshioki
           # Current Homebrew requires explicit developer mode for local bottles.
           HOMEBREW_DEVELOPER=1 brew install ./oshioki--*.bottle*.tar.gz
           brew test epsalmond/oshioki-ci/oshioki
