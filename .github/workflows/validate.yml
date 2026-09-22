@@ -24,6 +24,9 @@ jobs:
           repository: epsalmond/oshioki
           ref: main
           path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Build the current Mac package
         working-directory: source
         run: |
