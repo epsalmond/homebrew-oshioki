@@ -57,7 +57,8 @@ jobs:
           # Exercise the actual bottle before uploading it. No sudo setup or
           # Google login runs during the formula test.
           brew uninstall --force epsalmond/oshioki/oshioki
-          brew install ./oshioki--*.bottle*.tar.gz
+          # Current Homebrew requires explicit developer mode for local bottles.
+          HOMEBREW_DEVELOPER=1 brew install ./oshioki--*.bottle*.tar.gz
           brew test epsalmond/oshioki/oshioki
       - name: Upload the bottle to the release
         run: |
