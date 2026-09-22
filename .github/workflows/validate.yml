@@ -1,0 +1,59 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bottle-round-trip:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tap
+      - uses: actions/checkout@v4
+        with:
+          repository: epsalmond/oshioki
+          ref: main
+          path: source
+      - name: Build the current Mac package
+        working-directory: source
+        run: |
+          scripts/build-darwin-artifact "$RUNNER_TEMP/dist"
+          COPYFILE_DISABLE=1 tar -czf "$RUNNER_TEMP/oshioki.tar.gz" -C "$RUNNER_TEMP/dist" .
+      - name: Install the candidate formula from the local archive
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew tap-new --no-git epsalmond/oshioki-ci
+          cp tap/Formula/oshioki.rb "$(brew --repository epsalmond/oshioki-ci)/Formula/oshioki.rb"
+          python3 - "$(brew --repository epsalmond/oshioki-ci)/Formula/oshioki.rb" <<'PY'
+          import hashlib, os, pathlib, re, sys, tomllib
+          formula = pathlib.Path(sys.argv[1])
+          archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'oshioki.tar.gz'
+          version = tomllib.loads(pathlib.Path('source/Cargo.toml').read_text())['workspace']['package']['version']
+          text = formula.read_text()
+          text = re.sub(r'^  url ".*"$', f'  url "{archive.as_uri()}"', text, flags=re.M)
+          text = re.sub(r'^  sha256 ".*"$', f'  sha256 "{hashlib.sha256(archive.read_bytes()).hexdigest()}"', text, flags=re.M)
+          text = re.sub(r'^  version ".*"$', f'  version "{version}"', text, flags=re.M)
+          text = re.sub(r'  bottle do.*?  end\n', '', text, flags=re.S)
+          formula.write_text(text)
+          PY
+          brew install --build-bottle epsalmond/oshioki-ci/oshioki
+          brew test epsalmond/oshioki-ci/oshioki
+      - name: Bottle, pour, and test
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew bottle --skip-relocation --json epsalmond/oshioki-ci/oshioki
+          brew uninstall --force epsalmond/oshioki-ci/oshioki
+          brew install ./oshioki--*.bottle*.tar.gz
+          brew test epsalmond/oshioki-ci/oshioki
