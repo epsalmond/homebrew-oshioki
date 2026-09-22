@@ -46,6 +46,7 @@ jobs:
         run: |
           # Fresh auto-tap picks up the pushed formula, not this checkout.
           brew install --build-bottle epsalmond/oshioki/oshioki
+          brew test epsalmond/oshioki/oshioki
           # --skip-relocation: the tap bottles arm64 only and Apple silicon
           # Homebrew is always at /opt/homebrew, so there is no prefix to
           # relocate. It also keeps the pour from re-writing and re-signing
@@ -53,6 +54,13 @@ jobs:
           # the SHA256SUMS shipped beside them (oshioki issue #87).
           brew bottle --skip-relocation --json --root-url="$ROOT_URL" \
             epsalmond/oshioki/oshioki
+          # Exercise the actual bottle before uploading it. No sudo setup or
+          # Google login runs during the formula test.
+          brew uninstall --force epsalmond/oshioki/oshioki
+          brew trust --formula epsalmond/oshioki/oshioki
+          # Current Homebrew requires explicit developer mode for local bottles.
+          HOMEBREW_DEVELOPER=1 brew install ./oshioki--*.bottle*.tar.gz
+          brew test epsalmond/oshioki/oshioki
       - name: Upload the bottle to the release
         run: |
           # brew pours <name>--<version>... but installs request

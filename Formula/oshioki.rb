@@ -32,6 +32,10 @@ class Oshioki < Formula
   # arm64 prefix is supported here.
   def install
     bin.install "oshioki", "oshioki-agent", "install-oshioki-hook", "oshioki-laptop-setup"
+    # Keep older releases installable; releases after 0.1.15 must ship the helper.
+    if version > Version.new("0.1.15") || File.exist?("oshioki-browser-relay")
+      bin.install "oshioki-browser-relay"
+    end
     # Older release archives predate phone setup. The next release includes
     # both files, so keep this formula usable while the release is prepared.
     %w[oshioki-server oshioki-phone-setup].each do |name|
@@ -62,6 +66,11 @@ class Oshioki < Formula
       and icon.
       Add --contextual-pam to authenticate sudo through PAM instead of the
       approval plugin. Keep a second root shell open while that runs.
+      Releases after 0.1.15 also include oshioki-browser-relay. With Google
+      Cloud CLI installed separately, approve a local login with:
+        oshioki-browser-relay local-login --config ~/.config/oshioki/browser-relay/local.json
+      Identity and account setup:
+        https://github.com/epsalmond/oshioki/blob/main/docs/browser-ceremony-relay.md
       To drive the installer by hand instead, create /etc/oshioki/install.env
       (0600, root-owned;
       see https://github.com/epsalmond/oshioki/blob/main/RUNBOOK.md),
@@ -91,5 +100,20 @@ class Oshioki < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/oshioki --version")
+    if version > Version.new("0.1.15") || (bin/"oshioki-browser-relay").exist?
+      relay = bin/"oshioki-browser-relay"
+      assert_path_exists relay
+      sums = (libexec/"SHA256SUMS").read.lines.map do |line|
+        hash, name = line.split
+        hash if name == "oshioki-browser-relay"
+      end.compact
+      assert_equal [Digest::SHA256.file(relay).hexdigest], sums
+      %w[local-login login serve keygen].each do |command|
+        assert_match "Usage:", shell_output("#{relay} #{command} --help")
+      end
+      public_key = shell_output("#{relay} keygen #{testpath}/signing.key").strip
+      assert_match(/\A[A-Za-z0-9_-]{87}\z/, public_key)
+      assert_equal 0600, (testpath/"signing.key").stat.mode & 0777
+    end
   end
 end
