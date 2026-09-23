@@ -1,3 +1,5 @@
+require "json"
+
 class Oshioki < Formula
   desc "Touch ID or WebAuthn approval for sudo requests"
   homepage "https://github.com/epsalmond/oshioki"
@@ -41,6 +43,9 @@ class Oshioki < Formula
     %w[oshioki-server oshioki-phone-setup].each do |name|
       bin.install name if File.exist?(name)
     end
+    %w[oshioki-google-login-setup oshioki-browser-service].each do |name|
+      bin.install name if File.exist?(name)
+    end
     # The Touch ID sheet takes its name and icon from the calling process's
     # app bundle, so the agent oshioki-laptop-setup starts has to run from
     # inside Oshioki.app. Its inner binary is a copy of the flat
@@ -69,8 +74,11 @@ class Oshioki < Formula
       Releases after 0.1.15 also include oshioki-browser-relay. With Google
       Cloud CLI installed separately, approve a local login with:
         oshioki-browser-relay local-login --config ~/.config/oshioki/browser-relay/local.json
-      Identity and account setup:
+      Identity, account, and opt-in plain gcloud login setup:
         https://github.com/epsalmond/oshioki/blob/main/docs/browser-ceremony-relay.md
+      Newer releases include opt-in helpers for routing exactly `gcloud auth
+      login` through the relay and managing the Mac receiver. Other gcloud
+      invocations pass through unchanged.
       To drive the installer by hand instead, create /etc/oshioki/install.env
       (0600, root-owned;
       see https://github.com/epsalmond/oshioki/blob/main/RUNBOOK.md),
@@ -114,6 +122,18 @@ class Oshioki < Formula
       public_key = shell_output("#{relay} keygen #{testpath}/signing.key").strip
       assert_match(/\A[A-Za-z0-9_-]{87}\z/, public_key)
       assert_equal 0600, (testpath/"signing.key").stat.mode & 0777
+    end
+    shipped = JSON.parse((libexec/"manifest.json").read)["files"].map { |item| item["name"] }
+    %w[oshioki-google-login-setup oshioki-browser-service].each do |name|
+      next unless shipped.include?(name)
+      helper = bin/name
+      assert_path_exists helper
+      sums = (libexec/"SHA256SUMS").read.lines.filter_map do |line|
+        hash, shipped_name = line.split
+        hash if shipped_name == name
+      end
+      assert_equal [Digest::SHA256.file(helper).hexdigest], sums
+      assert_match(/usage:/i, shell_output("#{helper} --help"))
     end
   end
 end
