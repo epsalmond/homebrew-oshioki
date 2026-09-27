@@ -1,12 +1,23 @@
 """CI-only sandbox feasibility probe; never traverse or serialize job data."""
 import ctypes
 import os
+import subprocess
 import sys
 
 
 def main():
     if sys.platform != "darwin":
         return 1
+    # The integration harness inserts this probe only into its disposable
+    # fixture formula. Inspect no output, including fake job environments.
+    target = f"gui/{os.getuid()}/com.oshioki.agent"
+    try:
+        result = subprocess.run(["/bin/launchctl", "print", target],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=5, check=False)
+        print(f"launchctl sandbox print probe: status={result.returncode}", file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired):
+        print("launchctl sandbox print probe: unavailable", file=sys.stderr)
     try:
         cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
         sm = ctypes.CDLL("/System/Library/Frameworks/ServiceManagement.framework/ServiceManagement")
@@ -30,6 +41,9 @@ def main():
         sm.SMJobCopyDictionary.restype = ctypes.c_void_p
         sm.SMJobCopyDictionary.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         label = cf.CFStringCreateWithCString(None, b"com.oshioki.agent", 0x08000100)
+        if not label:
+            print("SM sandbox probe: allocation unavailable", file=sys.stderr)
+            return 0
         domain = ctypes.c_void_p.in_dll(sm, "kSMDomainUserLaunchd")
         response = None
         try:
@@ -43,6 +57,8 @@ def main():
 
             def field(name):
                 key = cf.CFStringCreateWithCString(None, name, 0x08000100)
+                if not key:
+                    raise ValueError("allocation unavailable")
                 try:
                     return cf.CFDictionaryGetValue(response, key)
                 finally:
