@@ -27,6 +27,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Update Homebrew for the declarative post-install DSL
+        run: brew update
       - name: Build the current Mac package
         working-directory: source
         run: |

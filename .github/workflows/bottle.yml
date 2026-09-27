@@ -18,6 +18,8 @@ jobs:
       ROOT_URL: https://github.com/epsalmond/oshioki/releases/download/${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+      - name: Update Homebrew for the declarative post-install DSL
+        run: brew update
       - name: Point the formula at the release tarball
         run: |
           set -euo pipefail

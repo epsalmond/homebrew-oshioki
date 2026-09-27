@@ -80,7 +80,13 @@ def main():
         helper_end = source.index("  def caveats\n", helper_start)
         legacy_source = source[:helper_start] + source[helper_end:]
         fixture_c = root / "agent.c"
-        fixture_c.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
+        fixture_c.write_text(
+            "#include <unistd.h>\n#include <fcntl.h>\n"
+            "int main(int argc, char **argv) { if (argc == 6) { "
+            "int fd = open(argv[5], O_WRONLY|O_CREAT|O_TRUNC, 0600); "
+            "if(fd < 0) return 1; dup2(fd,1); dup2(fd,2); close(fd); "
+            "execl(argv[1],argv[1],argv[2],argv[3],argv[4],(char*)0); return 1; "
+            "} for (;;) pause(); }\n")
         agent = root / "sleeping-agent"
         run(["clang", "-o", str(agent), str(fixture_c)])
         # A real, decodable icon produced by Apple's tool; synthetic icon bytes
@@ -161,16 +167,23 @@ def main():
             old = wait_job(native)
             old_path = native.executable(old["pid"])
             assert old_path.exists()
-            # Remove the installed old package while its process is alive.
-            # This is the historical failure: loaded Program remains stable opt.
-            brew("uninstall", "--force", "fixture/refresh/oshioki")
+            # Remove only the old app bundle while its process is alive and
+            # its keg remains installed: exercise the actual upgrade command.
+            shutil.rmtree(old_path.parents[2])
             assert not old_path.exists()
             assert native.read_job()["pid"] == old["pid"]
             write_formula("0.3.1")
-            result = brew("install", "--build-bottle", "fixture/refresh/oshioki")
-            assert native.read_job()["pid"] == old["pid"], "bottle construction must skip refresh"
-            result = brew("postinstall", "fixture/refresh/oshioki")
+            result = brew("upgrade", "--build-from-source", "fixture/refresh/oshioki")
             current = refreshed(old, result)
+            print("Automatic upgrade refreshed the removed-bundle process")
+            # Homebrew builds bottles from a --build-bottle installation,
+            # which deliberately skips postinstall. Preserve the live process
+            # through removal and use the explicit postinstall path afterward.
+            brew("uninstall", "--force", "fixture/refresh/oshioki")
+            brew("install", "--build-bottle", "fixture/refresh/oshioki")
+            assert native.read_job()["pid"] == current["pid"], "bottle construction must skip refresh"
+            result = brew("postinstall", "fixture/refresh/oshioki")
+            current = refreshed(current, result)
             # Homebrew's postinstall temporary HOME must not influence lookup.
             assert not (home / "Library/LaunchAgents").exists()
             # Build a real bottle and pour it using the actual stored formula.
@@ -232,15 +245,25 @@ def main():
             assert native.read_job() == custom_before
             assert "oshioki-laptop-setup" in result.stdout
             preserved()
-            # Same production label in user domain must not authorize touching
-            # the GUI custom job. asuser adopts the background manager.
+            # Run the helper inside an actual user-domain same-label job.
+            # `asuser` does not reliably change Aqua's bootstrap context.
             background_plist = root / "background.plist"
-            background_plist.write_bytes(plistlib.dumps(contents))
-            run(["/bin/launchctl", "bootstrap", f"user/{uid}", str(background_plist)])
+            background_log = root / "background.log"
             helper = opt / "libexec/refresh-agent.py"
-            result = run(["/bin/launchctl", "asuser", str(uid), sys.executable,
-                          str(helper), str(opt), "0.3.1"])
-            assert "outside this user's GUI login session" in result.stdout
+            background = dict(contents, ProgramArguments=[contents["ProgramArguments"][0],
+                              sys.executable, str(helper), str(opt), "0.3.1", str(background_log)])
+            background_plist.write_bytes(plistlib.dumps(background))
+            run(["/bin/launchctl", "bootstrap", f"user/{uid}", str(background_plist)])
+            deadline = time.monotonic() + 10
+            output = ""
+            while time.monotonic() < deadline:
+                if background_log.exists():
+                    output = background_log.read_text()
+                    if "outside this user's GUI login session" in output:
+                        break
+                time.sleep(0.1)
+            assert "outside this user's GUI login session" in output
+            assert "SYNTHETIC_PRIVATE_SENTINEL" not in output
             assert native.read_job() == custom_before
             preserved()
             print("Stopped, custom and same-label background services remained unchanged")
