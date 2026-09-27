@@ -112,29 +112,15 @@ class Oshioki < Formula
           if critical["pid"]:
               if not re.fullmatch(r"[1-9][0-9]*", critical["pid"][0]):
                   raise RefreshError("launchd service PID is malformed")
+              top_level = re.findall(r"^\tpid = ([1-9][0-9]*)$", output, flags=re.M)
+              if top_level != critical["pid"]:
+                  raise RefreshError("launchd service PID is ambiguous")
               pid = int(critical["pid"][0])
+              if pid > 2147483647:
+                  raise RefreshError("launchd service PID is malformed")
           if header["state"] == "running" and pid is None:
               raise RefreshError("running launchd service has no PID")
           return {"program": header["program"], "state": header["state"], "pid": pid}
-
-
-      def parse_list(output):
-          """launchctl list contains only PID, exit status and label columns."""
-          rows = []
-          for line in output.splitlines():
-              columns = line.split()
-              if len(columns) == 3 and columns[2] == LABEL:
-                  if not re.fullmatch(r"-?[0-9]+", columns[1]):
-                      raise RefreshError("launchd list metadata is malformed")
-                  if columns[0] == "-":
-                      rows.append(None)
-                  elif re.fullmatch(r"[1-9][0-9]*", columns[0]):
-                      rows.append(int(columns[0]))
-                  else:
-                      raise RefreshError("launchd list PID is malformed")
-          if len(rows) > 1:
-              raise RefreshError("launchd list metadata is ambiguous")
-          return rows
 
 
       class Native:
@@ -159,9 +145,9 @@ class Oshioki < Formula
               return result.stdout.decode("utf-8", "strict").strip()
 
           def context(self, uid):
-              # list queries the inherited namespace; require this user's Aqua
-              # manager before tying its credential-free PID row to an explicit GUI
-              # service query. Background jobs never authorize a GUI restart.
+              # The service query explicitly selects this user's GUI domain.
+              # Keep refreshes inside the GUI login session; background jobs
+              # never authorize a GUI restart.
               return (self.command(["/bin/launchctl", "managername"]) == "Aqua"
                       and self.command(["/bin/launchctl", "manageruid"]) == str(uid))
 
@@ -170,7 +156,6 @@ class Oshioki < Formula
               return bool(re.search(r'"com\.oshioki\.agent"\s*=>\s*true', output))
 
           def job(self, timeout=5):
-              deadline = time.monotonic() + timeout
               target = f"gui/{os.getuid()}/{LABEL}"
               result = self.result(["/bin/launchctl", "print", target], timeout)
               if result.returncode == 113:
@@ -181,17 +166,7 @@ class Oshioki < Formula
               # discard all fields except scalar program/state/PID metadata. Never
               # print the dump, command errors, or exception text from external tools.
               metadata = parse_service(result.stdout.decode("utf-8", "strict"), target)
-              remaining = deadline - time.monotonic()
-              if remaining <= 0:
-                  raise RefreshError("launchd metadata timed out")
-              rows = parse_list(self.command(["/bin/launchctl", "list"], remaining))
-              if not rows:
-                  return None
-              pid = rows[0]
-              if metadata["state"] != "running":
-                  return {"program": metadata["program"], "pid": None, "disabled": False}
-              if pid != metadata["pid"]:
-                  return None  # Process changed between the two read-only queries.
+              pid = metadata["pid"] if metadata["state"] == "running" else None
               return {"program": metadata["program"], "pid": pid, "disabled": False}
 
           def executable(self, pid):

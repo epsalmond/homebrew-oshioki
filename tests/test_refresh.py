@@ -198,6 +198,8 @@ class RefreshTests(unittest.TestCase):
                           output.replace("\tprogram = /stable/agent\n", ""),
                           output.replace("\tstate = running\n", ""),
                           output.replace("\tpid = 100", "\tpid = -1"),
+                          output.replace("\tpid = 100", "\tpid = 2147483648"),
+                          output.replace("\tpid = 100", "\t\tpid = 100"),
                           output.replace("\tpid = 100\n", "")):
             with self.assertRaises(refresh.RefreshError):
                 refresh.parse_service(malformed, target)
@@ -207,17 +209,7 @@ class RefreshTests(unittest.TestCase):
         with self.assertRaises(refresh.RefreshError):
             refresh.parse_service(hidden, target)
 
-    def test_list_parser_rejects_duplicate_labels_and_invalid_pid(self):
-        self.assertEqual(refresh.parse_list("PID Status Label\n100 0 com.oshioki.agent\n"), [100])
-        self.assertEqual(refresh.parse_list("- 0 com.oshioki.agent\n"), [None])
-        self.assertEqual(refresh.parse_list("100 0 com.other.agent\n"), [])
-        for output in ("100 0 com.oshioki.agent\n101 0 com.oshioki.agent\n",
-                       "0 0 com.oshioki.agent\n", "-1 0 com.oshioki.agent\n",
-                       "100 unknown com.oshioki.agent\n"):
-            with self.assertRaises(refresh.RefreshError):
-                refresh.parse_list(output)
-
-    def test_native_gui_print_and_list_crosscheck_and_missing_service(self):
+    def test_native_explicit_gui_print_and_missing_service(self):
         native = refresh.Native.__new__(refresh.Native)
         target, output = self.service_dump()
         calls = []
@@ -225,12 +217,9 @@ class RefreshTests(unittest.TestCase):
             calls.append(args)
             return SimpleNamespace(returncode=0, stdout=output.encode())
         native.result = result
-        native.command = lambda args, timeout=5: "100 0 com.oshioki.agent\n"
         with patch.object(refresh.os, "getuid", return_value=501):
             self.assertEqual(native.job(), {"program": "/stable/agent", "pid": 100, "disabled": False})
             self.assertEqual(calls, [["/bin/launchctl", "print", target]])
-            native.command = lambda args, timeout=5: "101 0 com.oshioki.agent\n"
-            self.assertIsNone(native.job())
             native.result = lambda args, timeout=5: SimpleNamespace(returncode=113, stdout=b"PRIVATE")
             self.assertIsNone(native.job())
             native.result = lambda args, timeout=5: SimpleNamespace(returncode=1, stdout=b"PRIVATE")
