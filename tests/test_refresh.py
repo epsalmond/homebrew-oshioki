@@ -202,6 +202,22 @@ class RefreshTests(unittest.TestCase):
             native.command = command
             self.assertEqual(native.context(501), expected)
 
+    def test_native_child_diagnostics_allow_only_static_stage_and_numeric_code(self):
+        native = refresh.Native.__new__(refresh.Native)
+        class Result:
+            returncode = 1
+            stdout = b'{"stage":"response_errno","code":1}'
+        with patch.object(refresh, "__file__", "packaged-helper.py", create=True):
+            with patch.object(refresh.subprocess, "run", return_value=Result()):
+                with self.assertRaisesRegex(refresh.RefreshError, "stage=response_errno, code=1"):
+                    native.job()
+            Result.stdout = b'{"stage":"SYNTHETIC_PRIVATE_SENTINEL","code":"private"}'
+            with patch.object(refresh.subprocess, "run", return_value=Result()):
+                with self.assertRaises(refresh.RefreshError) as error:
+                    native.job()
+                self.assertNotIn("PRIVATE", str(error.exception))
+                self.assertIn("stage=job_child, code=1", str(error.exception))
+
     def test_native_rejects_undecodable_icon_even_when_sips_exits_zero(self):
         native = refresh.Native.__new__(refresh.Native)
         class Result:

@@ -194,6 +194,13 @@ def main():
             # Homebrew's postinstall temporary HOME must not influence lookup.
             assert not (home / "Library/LaunchAgents").exists()
             # Build a real bottle and pour it using the actual stored formula.
+            # Existing published bottles do not carry this newly added helper.
+            # Delete only the known fixture helper before bottling to prove
+            # that the formula writes it during a helper-free bottle pour.
+            helper_path = (opt / "libexec/refresh-agent.py").resolve(strict=True)
+            fixture_keg = (prefix / "Cellar/oshioki/0.3.1").resolve(strict=True)
+            assert helper_path == fixture_keg / "libexec/refresh-agent.py"
+            helper_path.unlink()
             bottle_result = run(["brew", "bottle", "--skip-relocation", "--json",
                                  "--root-url=" + root.as_uri(), "fixture/refresh/oshioki"], env=env)
             print("Signed old package removal and sandboxed build postinstall passed")
@@ -203,6 +210,7 @@ def main():
             brew("uninstall", "--force", "fixture/refresh/oshioki")
             brew("trust", "--formula", "fixture/refresh/oshioki")
             result = brew("install", str(bottle.resolve()))
+            assert (opt / "libexec/refresh-agent.py").is_file()
             current = refreshed(current, result)
             print("Bottle installation refreshed the production label")
             # Add generated bottle metadata to the tap formula for a normal
