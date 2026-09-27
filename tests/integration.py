@@ -76,6 +76,17 @@ def main():
         formula = tap / "Formula/oshioki.rb"
         formula.parent.mkdir(parents=True)
         source = (Path(__file__).resolve().parents[1] / "Formula/oshioki.rb").read_text()
+        # Feasibility diagnostic uses the exact production postinstall sandbox
+        # against the existing isolated fixture, before legacy lookup can fail.
+        # This probe is never added to the shipped production formula.
+        probe = Path(__file__).with_name("probe_sm.py").read_text()
+        probe_steps = '    write_file "probe-sm.py", <<~\'SM_PROBE\', base: :libexec\n'
+        probe_steps += "\n".join("      " + line if line else "" for line in probe.splitlines()) + "\n"
+        probe_steps += '    SM_PROBE\n    run "{{HOMEBREW_PREFIX}}/opt/python@3.14/bin/python3.14",\n'
+        probe_steps += '        args: ["{{libexec}}/probe-sm.py", "{{opt_prefix}}"], print_stderr: true\n'
+        run_step = '    run "{{HOMEBREW_PREFIX}}/opt/python@3.14/bin/python3.14",\n'
+        assert source.count(run_step) == 1
+        source = source.replace(run_step, probe_steps + run_step, 1)
         # Strip only versioned release data. Keep actual install and all
         # declarative post-install steps verbatim from this PR.
         source = re.sub(r"  bottle do.*?^  end\n", "", source, flags=re.M | re.S)
