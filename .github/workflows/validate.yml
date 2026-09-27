@@ -27,6 +27,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Update Homebrew for the declarative post-install DSL
+        run: brew update
       - name: Build the current Mac package
         working-directory: source
         run: |
@@ -50,6 +52,11 @@ jobs:
           text = re.sub(r'  bottle do.*?  end\n', '', text, flags=re.S)
           formula.write_text(text)
           PY
+          # Resolve dependencies normally before building the Oshioki bottle.
+          # Sonoma dependencies without bottles can then build from source;
+          # --build-bottle requires all missing dependencies to have bottles.
+          # Only the named formula uses its source graph; it is not installed.
+          brew install --only-dependencies --build-from-source epsalmond/oshioki-ci/oshioki
           brew install --build-bottle epsalmond/oshioki-ci/oshioki
           brew test epsalmond/oshioki-ci/oshioki
       - name: Bottle, pour, and test

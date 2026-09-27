@@ -60,12 +60,288 @@ class Oshioki < Formula
     libexec.install "liboshioki_pam.dylib" if File.exist?("liboshioki_pam.dylib")
   end
 
+  # The helper is serialized with the formula, so a normal remote bottle
+  # upgrade receives this refresh logic even when the old bottle has no helper.
+  # Homebrew supplies a temporary HOME; loaded launchd metadata is authoritative.
+  post_install_steps do
+    write_file "refresh-agent.py", <<~'PYTHON', base: :libexec
+      import ctypes
+      import os
+      from pathlib import Path
+      import plistlib
+      import re
+      import subprocess
+      import sys
+      import time
+
+      LABEL = "com.oshioki.agent"
+
+      class RefreshError(Exception):
+          def __init__(self, message, stage=None, code=None):
+              super().__init__(message)
+              self.stage, self.code = stage, code
+
+          def __str__(self):
+              message = super().__str__()
+              return message if self.stage is None else f"{message} (stage={self.stage}, code={self.code})"
+
+      def parse_service(output, target):
+          """Keep only unambiguous scalar metadata; never return raw job output."""
+          lines = output.splitlines()
+          if not lines or lines[0] != target + " = {" or lines[-1] != "}":
+              raise RefreshError("launchd service metadata is malformed")
+          critical = {name: [] for name in ("program", "state", "pid")}
+          for line in lines[1:-1]:
+              match = re.fullmatch(r"\t(program|state|pid) = (.*)", line)
+              if match:
+                  critical[match[1]].append(match[2])
+          if any(len(values) > 1 for values in critical.values()):
+              # Multiline argument/environment values must never impersonate a
+              # program, state or PID. Ambiguous dumps are left untouched.
+              raise RefreshError("launchd service metadata is ambiguous")
+          header = {}
+          for line in lines[1:]:
+              if re.fullmatch(r"\t[^\t]+ = \{", line):
+                  break
+              match = re.fullmatch(r"\t(program|state) = (.*)", line)
+              if match:
+                  header[match[1]] = match[2]
+          if set(header) != {"program", "state"} or any(critical[name] != [header[name]] for name in header):
+              raise RefreshError("launchd service metadata is malformed")
+          pid = None
+          if critical["pid"]:
+              if not re.fullmatch(r"[1-9][0-9]*", critical["pid"][0]):
+                  raise RefreshError("launchd service PID is malformed")
+              top_level = re.findall(r"^\tpid = ([1-9][0-9]*)$", output, flags=re.M)
+              if top_level != critical["pid"]:
+                  raise RefreshError("launchd service PID is ambiguous")
+              pid = int(critical["pid"][0])
+              if pid > 2147483647:
+                  raise RefreshError("launchd service PID is malformed")
+          if header["state"] == "running" and pid is None:
+              raise RefreshError("running launchd service has no PID")
+          return {"program": header["program"], "state": header["state"], "pid": pid}
+
+
+      def parse_disabled(output):
+          lines = output.strip().splitlines()
+          if not lines or lines[0] != "disabled services = {" or lines[-1].strip() != "}":
+              raise RefreshError("launchd disabled-service metadata is malformed")
+          found = []
+          values = {"disabled": True, "enabled": False, "true": True, "false": False}
+          for line in lines[1:-1]:
+              if not line.strip():
+                  continue
+              match = re.fullmatch(r'\s*"([^"\r\n]+)"\s*=>\s*([a-z]+)\s*,?', line)
+              if not match:
+                  raise RefreshError("launchd disabled-service metadata is malformed")
+              if match[1] == LABEL:
+                  if match[2] not in values:
+                      raise RefreshError("launchd disabled-service state is unknown")
+                  found.append(values[match[2]])
+          if len(found) > 1:
+              raise RefreshError("launchd disabled-service metadata is ambiguous")
+          return found[0] if found else False
+
+
+      class Native:
+          def __init__(self):
+              self.lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+              self.lib.proc_pidpath.restype = ctypes.c_int
+              self.lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
+
+          def result(self, args, timeout=5):
+              try:
+                  return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        timeout=timeout, check=False)
+              except OSError as error:
+                  raise RefreshError("launchd metadata is unavailable", args[1], error.errno) from None
+              except subprocess.TimeoutExpired:
+                  raise RefreshError("launchd metadata is unavailable", args[1], "timeout") from None
+
+          def command(self, args, timeout=5):
+              result = self.result(args, timeout)
+              if result.returncode:
+                  raise RefreshError("launchd metadata is unavailable", args[1], result.returncode)
+              return result.stdout.decode("utf-8", "strict").strip()
+
+          def context(self, uid):
+              # The service query explicitly selects this user's GUI domain.
+              # Keep refreshes inside the GUI login session; background jobs
+              # never authorize a GUI restart.
+              return (self.command(["/bin/launchctl", "managername"]) == "Aqua"
+                      and self.command(["/bin/launchctl", "manageruid"]) == str(uid))
+
+          def disabled(self, uid):
+              output = self.command(["/bin/launchctl", "print-disabled", f"gui/{uid}"])
+              return parse_disabled(output)
+
+          def job(self, timeout=5):
+              target = f"gui/{os.getuid()}/{LABEL}"
+              result = self.result(["/bin/launchctl", "print", target], timeout)
+              if result.returncode == 113:
+                  return None
+              if result.returncode:
+                  raise RefreshError("launchd metadata is unavailable", "print", result.returncode)
+              # This local capture can contain credentials. Keep it private and
+              # discard all fields except scalar program/state/PID metadata. Never
+              # print the dump, command errors, or exception text from external tools.
+              metadata = parse_service(result.stdout.decode("utf-8", "strict"), target)
+              pid = metadata["pid"] if metadata["state"] == "running" else None
+              return {"program": metadata["program"], "pid": pid, "disabled": False}
+
+          def executable(self, pid):
+              buffer = ctypes.create_string_buffer(4096)
+              if self.lib.proc_pidpath(pid, buffer, len(buffer)) <= 0:
+                  return None
+              return Path(os.fsdecode(buffer.value)).resolve()
+
+          def restart(self, target, timeout):
+              try:
+                  result = subprocess.run(["/bin/launchctl", "kickstart", "-k", target],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                          timeout=timeout, check=False)
+              except (OSError, subprocess.TimeoutExpired):
+                  raise RefreshError("agent restart failed") from None
+              if result.returncode:
+                  raise RefreshError("agent restart failed")
+
+          def icon(self, path):
+              try:
+                  result = subprocess.run(["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                          timeout=5, check=False)
+              except (OSError, subprocess.TimeoutExpired):
+                  raise RefreshError("new agent bundle icon could not be verified") from None
+              dimensions = re.findall(rb"pixel(?:Width|Height):\s*([0-9]+)", result.stdout)
+              if result.returncode or len(dimensions) != 2 or any(int(value) <= 0 for value in dimensions):
+                  raise RefreshError("new agent bundle icon is invalid")
+
+          def signature(self, bundle):
+              try:
+                  result = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                          timeout=5, check=False)
+              except (OSError, subprocess.TimeoutExpired):
+                  raise RefreshError("new agent bundle signature could not be verified") from None
+              if result.returncode:
+                  raise RefreshError("new agent bundle signature is invalid")
+
+
+      def validate_bundle(opt, version, native):
+          bundle = opt / "Oshioki.app"
+          executable = bundle / "Contents/MacOS/oshioki-agent"
+          if not executable.is_file() or not os.access(executable, os.X_OK):
+              raise RefreshError("new bundled agent is missing or not executable")
+          with (bundle / "Contents/Info.plist").open("rb") as stream:
+              info = plistlib.load(stream)
+          if not isinstance(info, dict):
+              raise RefreshError("new agent bundle metadata is invalid")
+          expected = {"CFBundleIdentifier": "dev.oshioki.agent", "CFBundleExecutable": "oshioki-agent",
+                      "CFBundleIconFile": "Oshioki", "CFBundlePackageType": "APPL", "CFBundleVersion": version,
+                      "CFBundleShortVersionString": version}
+          if any(info.get(key) != value for key, value in expected.items()):
+              raise RefreshError("new agent bundle identity or version is invalid")
+          icon = (bundle / "Contents/Resources/Oshioki.icns").read_bytes()
+          if len(icon) <= 8 or icon[:4] != b"icns" or int.from_bytes(icon[4:8], "big") != len(icon):
+              raise RefreshError("new agent bundle icon is invalid")
+          native.icon(bundle / "Contents/Resources/Oshioki.icns")
+          native.signature(bundle)
+          resolved = executable.resolve(strict=True)
+          if resolved.parent != opt.resolve(strict=True) / "Oshioki.app/Contents/MacOS":
+              raise RefreshError("new bundled executable leaves the current keg")
+          return resolved
+
+
+      def refresh(opt, version, native, uid=None, clock=time.monotonic, sleep=time.sleep, emit=None):
+          uid = os.getuid() if uid is None else uid
+          emit = emit or (lambda text: print(text, file=sys.stderr))
+          recovery = "brew postinstall epsalmond/oshioki/oshioki"
+          target = f"gui/{uid}/{LABEL}"
+          try:
+              # GetJob is scoped to the caller's bootstrap namespace. A background
+              # or another user's manager must never authorize an Aqua job restart.
+              if not native.context(uid):
+                  emit("Oshioki agent refresh skipped outside this user's GUI login session. "
+                       f"In a logged-in Terminal, run: {recovery}")
+                  return 0
+              job = native.job()
+              if not job or job["disabled"] or (not job["pid"] or job["pid"] <= 0) or native.disabled(uid):
+                  return 0
+              expected = str(opt / "Oshioki.app/Contents/MacOS/oshioki-agent")
+              if job["program"] != expected:
+                  emit("Oshioki agent uses a custom executable. To update its configuration, "
+                       "run your original setup command: oshioki-laptop-setup (add --local "
+                       "if you originally used local mode).")
+                  return 0
+              current = validate_bundle(opt, version, native)
+              # Recheck ownership and running state after validation; never start a
+              # service which stopped or was reconfigured while the bundle was checked.
+              before = native.job()
+              if before != job or native.disabled(uid):
+                  emit("Oshioki agent changed during validation; refresh skipped. "
+                       f"Retry: {recovery}")
+                  return 0
+              deadline = clock() + 10
+              native.restart(target, max(0.001, deadline - clock()))
+              while clock() < deadline:
+                  after = native.job(timeout=max(0.001, deadline - clock()))
+                  if after and after["program"] == expected and not after["disabled"]:
+                      pid = after["pid"]
+                      if pid and pid > 0 and pid != before["pid"] and native.executable(pid) == current and clock() < deadline:
+                          emit("Oshioki agent refreshed to the current bundled executable. "
+                               "Retry any approval interrupted by the refresh.")
+                          return 0
+                  sleep(min(0.1, max(0, deadline - clock())))
+              raise RefreshError("replacement agent did not reach the current bundled executable within ten seconds")
+          except RefreshError as error:
+              # RefreshError contains only our fixed messages, never command output.
+              emit(f"Oshioki agent refresh failed: {error}. "
+                   f"In a logged-in Terminal, retry: {recovery}. "
+                   "For an invalid bundle, reinstall: brew reinstall epsalmond/oshioki/oshioki. "
+                   "Retry any approval interrupted by the refresh.")
+              return 1
+          except (OSError, ValueError, plistlib.InvalidFileException):
+              emit("Oshioki agent bundle could not be read or validated. "
+                   "Reinstall: brew reinstall epsalmond/oshioki/oshioki. "
+                   f"Then retry in a logged-in Terminal: {recovery}")
+              return 1
+
+
+      def main():
+          if len(sys.argv) != 3 or sys.platform != "darwin":
+              return 1
+          try:
+              native = Native()
+          except (OSError, AttributeError):
+              print("Oshioki agent metadata API is unavailable. Retry in a logged-in Terminal: "
+                    "brew postinstall epsalmond/oshioki/oshioki", file=sys.stderr)
+              return 1
+          return refresh(Path(sys.argv[1]), sys.argv[2], native)
+
+
+      if __name__ == "__main__":
+          sys.exit(main())
+    PYTHON
+    run "{{HOMEBREW_PREFIX}}/opt/python@3.14/bin/python3.14",
+        args: ["{{libexec}}/refresh-agent.py", "{{opt_prefix}}", "{{version}}"],
+        print_stdout: true, print_stderr: true
+  end
+
   def caveats
     <<~EOS
       The sudo plugin and hook state live outside the Cellar and need root.
       Run setup as yourself, not under sudo; it elevates once by itself and
       finds this keg's binaries, module and SHA256SUMS on its own:
         oshioki-laptop-setup
+      Upgrades automatically refresh only your already running GUI Mac agent
+      configured with this formula's stable opt app-bundle executable. Absent,
+      stopped, disabled, and custom agents remain unchanged. Custom paths need
+      your original oshioki-laptop-setup command to update their configuration.
+      If refresh fails, retry from a logged-in Terminal:
+        brew postinstall epsalmond/oshioki/oshioki
+      Retry approvals interrupted by the refresh. The privileged hook, plugin,
+      and PAM update still requires the setup command above (oshioki issue #48).
       From releases that include Oshioki.app the keg carries it and setup runs
       the agent from inside it, so the Touch ID sheet shows the Oshioki name
       and icon.

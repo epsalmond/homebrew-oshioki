@@ -18,6 +18,8 @@ jobs:
       ROOT_URL: https://github.com/epsalmond/oshioki/releases/download/${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+      - name: Update Homebrew for the declarative post-install DSL
+        run: brew update
       - name: Point the formula at the release tarball
         run: |
           set -euo pipefail
@@ -45,6 +47,10 @@ jobs:
       - name: Bottle the formula
         run: |
           # Fresh auto-tap picks up the pushed formula, not this checkout.
+          # Keep Sonoma support when a dependency no longer has a bottle.
+          # Preinstall dependencies normally; the named formula's source graph
+          # avoids dependency metadata from the previous release's bottle.
+          brew install --only-dependencies --build-from-source epsalmond/oshioki/oshioki
           brew install --build-bottle epsalmond/oshioki/oshioki
           brew test epsalmond/oshioki/oshioki
           # --skip-relocation: the tap bottles arm64 only and Apple silicon
