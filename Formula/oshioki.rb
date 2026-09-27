@@ -66,8 +66,6 @@ class Oshioki < Formula
   post_install_steps do
     write_file "refresh-agent.py", <<~'PYTHON', base: :libexec
       import ctypes
-      import errno
-      import json
       import os
       from pathlib import Path
       import plistlib
@@ -87,122 +85,114 @@ class Oshioki < Formula
               message = super().__str__()
               return message if self.stage is None else f"{message} (stage={self.stage}, code={self.code})"
 
+      def parse_service(output, target):
+          """Keep only unambiguous scalar metadata; never return raw job output."""
+          lines = output.splitlines()
+          if not lines or lines[0] != target + " = {" or lines[-1] != "}":
+              raise RefreshError("launchd service metadata is malformed")
+          critical = {name: [] for name in ("program", "state", "pid")}
+          for line in lines[1:-1]:
+              match = re.fullmatch(r"\s*(program|state|pid) = (.*)", line)
+              if match:
+                  critical[match[1]].append(match[2])
+          if any(len(values) > 1 for values in critical.values()):
+              # Multiline argument/environment values must never impersonate a
+              # program, state or PID. Ambiguous dumps are left untouched.
+              raise RefreshError("launchd service metadata is ambiguous")
+          header = {}
+          for line in lines[1:]:
+              if re.fullmatch(r"\t[^\t]+ = \{", line):
+                  break
+              match = re.fullmatch(r"\t(program|state) = (.*)", line)
+              if match:
+                  header[match[1]] = match[2]
+          if set(header) != {"program", "state"} or any(critical[name] != [header[name]] for name in header):
+              raise RefreshError("launchd service metadata is malformed")
+          pid = None
+          if critical["pid"]:
+              if not re.fullmatch(r"[1-9][0-9]*", critical["pid"][0]):
+                  raise RefreshError("launchd service PID is malformed")
+              pid = int(critical["pid"][0])
+          if header["state"] == "running" and pid is None:
+              raise RefreshError("running launchd service has no PID")
+          return {"program": header["program"], "state": header["state"], "pid": pid}
+
+
+      def parse_list(output):
+          """launchctl list contains only PID, exit status and label columns."""
+          rows = []
+          for line in output.splitlines():
+              columns = line.split()
+              if len(columns) == 3 and columns[2] == LABEL:
+                  if not re.fullmatch(r"-?[0-9]+", columns[1]):
+                      raise RefreshError("launchd list metadata is malformed")
+                  if columns[0] == "-":
+                      rows.append(None)
+                  elif re.fullmatch(r"[1-9][0-9]*", columns[0]):
+                      rows.append(int(columns[0]))
+                  else:
+                      raise RefreshError("launchd list PID is malformed")
+          if len(rows) > 1:
+              raise RefreshError("launchd list metadata is ambiguous")
+          return rows
+
+
       class Native:
-          """Read selected loaded-job metadata; never traverse its environment."""
           def __init__(self):
               self.lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-              signatures = {
-                  "launch_data_alloc": (ctypes.c_void_p, [ctypes.c_int]),
-                  "launch_data_new_string": (ctypes.c_void_p, [ctypes.c_char_p]),
-                  "launch_data_dict_insert": (ctypes.c_bool, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]),
-                  "launch_msg": (ctypes.c_void_p, [ctypes.c_void_p]),
-                  "launch_data_get_type": (ctypes.c_int, [ctypes.c_void_p]),
-                  "launch_data_get_errno": (ctypes.c_int, [ctypes.c_void_p]),
-                  "launch_data_dict_lookup": (ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_char_p]),
-                  "launch_data_get_string": (ctypes.c_char_p, [ctypes.c_void_p]),
-                  "launch_data_get_integer": (ctypes.c_longlong, [ctypes.c_void_p]),
-                  "launch_data_get_bool": (ctypes.c_bool, [ctypes.c_void_p]),
-                  "launch_data_array_get_index": (ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_size_t]),
-                  "launch_data_array_get_count": (ctypes.c_size_t, [ctypes.c_void_p]),
-                  "launch_data_free": (None, [ctypes.c_void_p]),
-                  "proc_pidpath": (ctypes.c_int, [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]),
-              }
-              for name, (result, args) in signatures.items():
-                  function = getattr(self.lib, name)
-                  function.restype, function.argtypes = result, args
+              self.lib.proc_pidpath.restype = ctypes.c_int
+              self.lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
 
-          def command(self, args, timeout=5):
-              # Only commands that return selected non-secret metadata use PIPE.
+          def result(self, args, timeout=5):
               try:
-                  result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                          timeout=timeout, check=False)
+                  return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        timeout=timeout, check=False)
               except OSError as error:
                   raise RefreshError("launchd metadata is unavailable", args[1], error.errno) from None
               except subprocess.TimeoutExpired:
                   raise RefreshError("launchd metadata is unavailable", args[1], "timeout") from None
+
+          def command(self, args, timeout=5):
+              result = self.result(args, timeout)
               if result.returncode:
                   raise RefreshError("launchd metadata is unavailable", args[1], result.returncode)
               return result.stdout.decode("utf-8", "strict").strip()
 
           def context(self, uid):
+              # list queries the inherited namespace; require this user's Aqua
+              # manager before tying its credential-free PID row to an explicit GUI
+              # service query. Background jobs never authorize a GUI restart.
               return (self.command(["/bin/launchctl", "managername"]) == "Aqua"
                       and self.command(["/bin/launchctl", "manageruid"]) == str(uid))
 
           def disabled(self, uid):
               output = self.command(["/bin/launchctl", "print-disabled", f"gui/{uid}"])
-              # This command returns only the override table, never job dictionaries.
               return bool(re.search(r'"com\.oshioki\.agent"\s*=>\s*true', output))
 
           def job(self, timeout=5):
-              # Bound the deprecated synchronous launchd API in a child. Only
-              # the selected metadata crosses this pipe; no job dictionary is
-              # serialized. A wedged launchd cannot extend verification.
-              try:
-                  result = subprocess.run([sys.executable, __file__, "--job"],
-                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                          timeout=timeout, check=False)
-                  decoded = json.loads(result.stdout) if result.stdout else None
-                  if result.returncode:
-                      stages = {"allocate_request", "allocate_label", "insert_request", "launch_msg",
-                                "response_errno", "response_type", "Program", "ProgramArguments",
-                                "PID", "Disabled", "argument_type", "load_library"}
-                      if isinstance(decoded, dict) and decoded.get("stage") in stages:
-                          code = decoded.get("code")
-                          if code is None or isinstance(code, int):
-                              raise RefreshError("launchd metadata is unavailable", decoded["stage"], code)
-                      raise RefreshError("launchd metadata is unavailable", "job_child", result.returncode)
-                  return decoded
-              except OSError as error:
-                  raise RefreshError("launchd metadata is unavailable", "job_child", error.errno) from None
-              except (ValueError, subprocess.TimeoutExpired):
-                  raise RefreshError("launchd metadata is unavailable", "job_child", "timeout_or_invalid_json") from None
-
-          def read_job(self):
-              lib = self.lib
-              request = lib.launch_data_alloc(1)
-              if not request:
-                  raise RefreshError("launchd metadata is unavailable", "allocate_request", ctypes.get_errno())
-              response = None
-              try:
-                  value = lib.launch_data_new_string(LABEL.encode())
-                  if not value:
-                      raise RefreshError("launchd metadata is unavailable", "allocate_label", ctypes.get_errno())
-                  if not lib.launch_data_dict_insert(request, value, b"GetJob"):
-                      lib.launch_data_free(value)
-                      raise RefreshError("launchd metadata is unavailable", "insert_request", ctypes.get_errno())
-                  ctypes.set_errno(0)
-                  response = lib.launch_msg(request)
-                  if not response:
-                      raise RefreshError("launchd metadata is unavailable", "launch_msg", ctypes.get_errno())
-                  kind = lib.launch_data_get_type(response)
-                  if kind == 9:
-                      response_errno = lib.launch_data_get_errno(response)
-                      if response_errno == errno.ESRCH:
-                          return None
-                      raise RefreshError("launchd metadata is unavailable", "response_errno", response_errno)
-                  if kind != 1:
-                      raise RefreshError("launchd metadata is unavailable", "response_type", kind)
-                  def field(name, kind):
-                      item = lib.launch_data_dict_lookup(response, name)
-                      if item and lib.launch_data_get_type(item) != kind:
-                          raise RefreshError("launchd metadata is malformed", name.decode("ascii"), lib.launch_data_get_type(item))
-                      return item
-                  program = field(b"Program", 7)
-                  if not program:
-                      arguments = field(b"ProgramArguments", 2)
-                      if arguments and lib.launch_data_array_get_count(arguments):
-                          program = lib.launch_data_array_get_index(arguments, 0)
-                          if lib.launch_data_get_type(program) != 7:
-                              raise RefreshError("launchd metadata is malformed", "argument_type", lib.launch_data_get_type(program))
-                  pid = field(b"PID", 4)
-                  disabled = field(b"Disabled", 6)
-                  return {"program": os.fsdecode(lib.launch_data_get_string(program)) if program else None,
-                          "pid": lib.launch_data_get_integer(pid) if pid else None,
-                          "disabled": bool(disabled and lib.launch_data_get_bool(disabled))}
-              finally:
-                  if response:
-                      lib.launch_data_free(response)
-                  lib.launch_data_free(request)
+              deadline = time.monotonic() + timeout
+              target = f"gui/{os.getuid()}/{LABEL}"
+              result = self.result(["/bin/launchctl", "print", target], timeout)
+              if result.returncode == 113:
+                  return None
+              if result.returncode:
+                  raise RefreshError("launchd metadata is unavailable", "print", result.returncode)
+              # This local capture can contain credentials. Keep it private and
+              # discard all fields except scalar program/state/PID metadata. Never
+              # print the dump, command errors, or exception text from external tools.
+              metadata = parse_service(result.stdout.decode("utf-8", "strict"), target)
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  raise RefreshError("launchd metadata timed out")
+              rows = parse_list(self.command(["/bin/launchctl", "list"], remaining))
+              if not rows:
+                  return None
+              pid = rows[0]
+              if metadata["state"] != "running":
+                  return {"program": metadata["program"], "pid": None, "disabled": False}
+              if pid != metadata["pid"]:
+                  return None  # Process changed between the two read-only queries.
+              return {"program": metadata["program"], "pid": pid, "disabled": False}
 
           def executable(self, pid):
               buffer = ctypes.create_string_buffer(4096)
@@ -323,16 +313,6 @@ class Oshioki < Formula
 
 
       def main():
-          if len(sys.argv) == 2 and sys.argv[1] == "--job" and sys.platform == "darwin":
-              try:
-                  print(json.dumps(Native().read_job()))
-                  return 0
-              except RefreshError as error:
-                  print(json.dumps({"stage": error.stage, "code": error.code}))
-                  return 1
-              except (OSError, AttributeError):
-                  print(json.dumps({"stage": "load_library", "code": None}))
-                  return 1
           if len(sys.argv) != 3 or sys.platform != "darwin":
               return 1
           try:

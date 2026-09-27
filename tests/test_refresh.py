@@ -5,6 +5,7 @@ import plistlib
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 from refresh_source import load
 
 refresh = load()
@@ -155,44 +156,6 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(self.run_refresh(), 1)
         self.assertFalse(self.restarts())
 
-    def test_native_queries_only_selected_loaded_fields(self):
-        class MetadataLibrary:
-            def __init__(self):
-                self.lookups = []
-                self.freed = []
-                self.values = {1: (1, None), 2: (7, refresh.LABEL), 3: (1, None),
-                               4: (2, [5]), 5: (7, "/stable/agent"), 6: (4, 100), 7: (6, False)}
-
-            def launch_data_alloc(self, kind): return 1
-            def launch_data_new_string(self, text):
-                self.assert_label = text
-                return 2
-            def launch_data_dict_insert(self, request, value, key):
-                self.request_key = key
-                return True
-            def launch_msg(self, request): return 3
-            def launch_data_get_type(self, value): return self.values[value][0]
-            def launch_data_dict_lookup(self, response, key):
-                self.lookups.append(key)
-                # Any environment traversal, enumeration, or serialization is
-                # deliberately unavailable; only these four lookups are valid.
-                return {b"Program": None, b"ProgramArguments": 4, b"PID": 6, b"Disabled": 7}[key]
-            def launch_data_array_get_count(self, value): return len(self.values[value][1])
-            def launch_data_array_get_index(self, value, index):
-                if index != 0: raise AssertionError("read unneeded arguments")
-                return self.values[value][1][index]
-            def launch_data_get_string(self, value): return self.values[value][1].encode()
-            def launch_data_get_integer(self, value): return self.values[value][1]
-            def launch_data_get_bool(self, value): return self.values[value][1]
-            def launch_data_free(self, value): self.freed.append(value)
-
-        native = refresh.Native.__new__(refresh.Native)
-        native.lib = MetadataLibrary()
-        self.assertEqual(native.read_job(), {"program": "/stable/agent", "pid": 100, "disabled": False})
-        self.assertEqual(native.lib.lookups, [b"Program", b"ProgramArguments", b"PID", b"Disabled"])
-        self.assertEqual(native.lib.freed, [3, 1])
-        self.assertEqual(native.lib.request_key, b"GetJob")
-
     def test_native_requires_aqua_and_current_uid(self):
         native = refresh.Native.__new__(refresh.Native)
         for name, uid, expected in (("Aqua", "501", True), ("Background", "501", False),
@@ -202,21 +165,78 @@ class RefreshTests(unittest.TestCase):
             native.command = command
             self.assertEqual(native.context(501), expected)
 
-    def test_native_child_diagnostics_allow_only_static_stage_and_numeric_code(self):
-        native = refresh.Native.__new__(refresh.Native)
-        class Result:
-            returncode = 1
-            stdout = b'{"stage":"response_errno","code":1}'
-        with patch.object(refresh, "__file__", "packaged-helper.py", create=True):
-            with patch.object(refresh.subprocess, "run", return_value=Result()):
-                with self.assertRaisesRegex(refresh.RefreshError, "stage=response_errno, code=1"):
-                    native.job()
-            Result.stdout = b'{"stage":"SYNTHETIC_PRIVATE_SENTINEL","code":"private"}'
-            with patch.object(refresh.subprocess, "run", return_value=Result()):
+    def service_dump(self, state="running", pid=100):
+        target = "gui/501/com.oshioki.agent"
+        output = (target + " = {\n\tactive count = 1\n\tpath = /fixture/agent.plist\n"
+                  "\ttype = LaunchAgent\n\tstate = " + state + "\n\n"
+                  "\tprogram = /stable/agent\n\targuments = {\n\t\t/stable/agent\n\t}\n"
+                  "\tenvironment = {\n\t\tNATS_PASS = SYNTHETIC_PRIVATE_SENTINEL\n\t}\n")
+        if pid is not None:
+            output += f"\tpid = {pid}\n"
+        return target, output + "}\n"
+
+    def test_service_parser_retains_only_metadata(self):
+        target, output = self.service_dump()
+        metadata = refresh.parse_service(output, target)
+        self.assertEqual(metadata, {"program": "/stable/agent", "state": "running", "pid": 100})
+        self.assertNotIn("PRIVATE", str(metadata))
+        target, output = self.service_dump(state="waiting", pid=None)
+        self.assertIsNone(refresh.parse_service(output, target)["pid"])
+
+    def test_service_parser_rejects_forged_environment_or_argument_metadata(self):
+        target, output = self.service_dump()
+        for field in ("program = /evil/agent", "state = running", "pid = 999"):
+            for insertion in ("\t\tNATS_PASS =", "\t\t/stable/agent"):
+                forged = output.replace(insertion, insertion + "\n}\n\t" + field)
                 with self.assertRaises(refresh.RefreshError) as error:
-                    native.job()
+                    refresh.parse_service(forged, target)
                 self.assertNotIn("PRIVATE", str(error.exception))
-                self.assertIn("stage=job_child, code=1", str(error.exception))
+
+    def test_service_parser_rejects_malformed_truncated_and_wrong_domain(self):
+        target, output = self.service_dump()
+        for malformed in (output[:-2], output.replace(target, "gui/502/com.oshioki.agent", 1),
+                          output.replace("\tprogram = /stable/agent\n", ""),
+                          output.replace("\tstate = running\n", ""),
+                          output.replace("\tpid = 100", "\tpid = -1"),
+                          output.replace("\tpid = 100\n", "")):
+            with self.assertRaises(refresh.RefreshError):
+                refresh.parse_service(malformed, target)
+        # A program line appearing only inside an environment cannot qualify.
+        hidden = output.replace("\tprogram = /stable/agent\n", "").replace(
+            "\t\tNATS_PASS =", "\tprogram = /stable/agent\n\t\tNATS_PASS =")
+        with self.assertRaises(refresh.RefreshError):
+            refresh.parse_service(hidden, target)
+
+    def test_list_parser_rejects_duplicate_labels_and_invalid_pid(self):
+        self.assertEqual(refresh.parse_list("PID Status Label\n100 0 com.oshioki.agent\n"), [100])
+        self.assertEqual(refresh.parse_list("- 0 com.oshioki.agent\n"), [None])
+        self.assertEqual(refresh.parse_list("100 0 com.other.agent\n"), [])
+        for output in ("100 0 com.oshioki.agent\n101 0 com.oshioki.agent\n",
+                       "0 0 com.oshioki.agent\n", "-1 0 com.oshioki.agent\n",
+                       "100 unknown com.oshioki.agent\n"):
+            with self.assertRaises(refresh.RefreshError):
+                refresh.parse_list(output)
+
+    def test_native_gui_print_and_list_crosscheck_and_missing_service(self):
+        native = refresh.Native.__new__(refresh.Native)
+        target, output = self.service_dump()
+        calls = []
+        def result(args, timeout=5):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout=output.encode())
+        native.result = result
+        native.command = lambda args, timeout=5: "100 0 com.oshioki.agent\n"
+        with patch.object(refresh.os, "getuid", return_value=501):
+            self.assertEqual(native.job(), {"program": "/stable/agent", "pid": 100, "disabled": False})
+            self.assertEqual(calls, [["/bin/launchctl", "print", target]])
+            native.command = lambda args, timeout=5: "101 0 com.oshioki.agent\n"
+            self.assertIsNone(native.job())
+            native.result = lambda args, timeout=5: SimpleNamespace(returncode=113, stdout=b"PRIVATE")
+            self.assertIsNone(native.job())
+            native.result = lambda args, timeout=5: SimpleNamespace(returncode=1, stdout=b"PRIVATE")
+            with self.assertRaises(refresh.RefreshError) as error:
+                native.job()
+            self.assertNotIn("PRIVATE", str(error.exception))
 
     def test_native_rejects_undecodable_icon_even_when_sips_exits_zero(self):
         native = refresh.Native.__new__(refresh.Native)

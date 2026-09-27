@@ -35,7 +35,7 @@ def run(args, env=None, success=True):
 def wait_job(native, running=True):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        job = native.read_job()
+        job = native.job()
         if job and bool(job["pid"] and job["pid"] > 0) == running:
             # launchd can publish the PID while it still executes xpcproxy.
             # Wait for exec before treating the fixture as running.
@@ -53,7 +53,7 @@ def main():
     native = module.Native()
     uid = os.getuid()
     assert native.context(uid), "runner must provide the current user's Aqua session"
-    assert native.read_job() is None, "refuse to replace an existing production label"
+    assert native.job() is None, "refuse to replace an existing production label"
     assert not native.disabled(uid), "refuse to replace an existing disabled override"
     target = f"gui/{uid}/{module.LABEL}"
     user_target = f"user/{uid}/{module.LABEL}"
@@ -76,17 +76,6 @@ def main():
         formula = tap / "Formula/oshioki.rb"
         formula.parent.mkdir(parents=True)
         source = (Path(__file__).resolve().parents[1] / "Formula/oshioki.rb").read_text()
-        # Feasibility diagnostic uses the exact production postinstall sandbox
-        # against the existing isolated fixture, before legacy lookup can fail.
-        # This probe is never added to the shipped production formula.
-        probe = Path(__file__).with_name("probe_sm.py").read_text()
-        probe_steps = '    write_file "probe-sm.py", <<~\'SM_PROBE\', base: :libexec\n'
-        probe_steps += "\n".join("      " + line if line else "" for line in probe.splitlines()) + "\n"
-        probe_steps += '    SM_PROBE\n    run "{{HOMEBREW_PREFIX}}/opt/python@3.14/bin/python3.14",\n'
-        probe_steps += '        args: ["{{libexec}}/probe-sm.py", "{{opt_prefix}}"], print_stderr: true\n'
-        run_step = '    run "{{HOMEBREW_PREFIX}}/opt/python@3.14/bin/python3.14",\n'
-        assert source.count(run_step) == 1
-        source = source.replace(run_step, probe_steps + run_step, 1)
         # Strip only versioned release data. Keep actual install and all
         # declarative post-install steps verbatim from this PR.
         source = re.sub(r"  bottle do.*?^  end\n", "", source, flags=re.M | re.S)
@@ -189,7 +178,7 @@ def main():
             assert old_path == old_app / "Contents/MacOS/oshioki-agent", "fixture has not executed its agent"
             shutil.rmtree(old_app)
             assert not old_path.exists()
-            assert native.read_job()["pid"] == old["pid"]
+            assert native.job()["pid"] == old["pid"]
             write_formula("0.3.1")
             result = brew("upgrade", "--build-from-source", "fixture/refresh/oshioki")
             current = refreshed(old, result)
@@ -199,7 +188,7 @@ def main():
             # through removal and use the explicit postinstall path afterward.
             brew("uninstall", "--force", "fixture/refresh/oshioki")
             brew("install", "--build-bottle", "fixture/refresh/oshioki")
-            assert native.read_job()["pid"] == current["pid"], "bottle construction must skip refresh"
+            assert native.job()["pid"] == current["pid"], "bottle construction must skip refresh"
             result = brew("postinstall", "fixture/refresh/oshioki")
             current = refreshed(current, result)
             # Homebrew's postinstall temporary HOME must not influence lookup.
@@ -246,7 +235,7 @@ def main():
             run(["/bin/launchctl", "disable", target])
             assert native.disabled(uid)
             result = brew("postinstall", "fixture/refresh/oshioki")
-            assert native.read_job() == current
+            assert native.job() == current
             assert native.disabled(uid)
             assert "Oshioki agent refreshed" not in result.stdout
             preserved()
@@ -254,7 +243,7 @@ def main():
             # No service: another bottle reinstall may write only keg helper.
             run(["/bin/launchctl", "bootout", target])
             result = brew("reinstall", "--force-bottle", "fixture/refresh/oshioki")
-            assert native.read_job() is None
+            assert native.job() is None
             assert "Oshioki agent refreshed" not in result.stdout
             preserved()
             print("No-service bottle reinstall was side-effect free")
@@ -265,7 +254,7 @@ def main():
             run(["/bin/launchctl", "bootstrap", f"gui/{uid}", str(plist)])
             wait_job(native, running=False)
             brew("postinstall", "fixture/refresh/oshioki")
-            assert not native.read_job()["pid"]
+            assert not native.job()["pid"]
             run(["/bin/launchctl", "bootout", target])
             # A custom program in GUI cannot be refreshed; no private config
             # output is logged, and actionable setup guidance stays visible.
@@ -277,7 +266,7 @@ def main():
             run(["/bin/launchctl", "bootstrap", f"gui/{uid}", str(plist)])
             custom_before = wait_job(native)
             result = brew("postinstall", "fixture/refresh/oshioki")
-            assert native.read_job() == custom_before
+            assert native.job() == custom_before
             assert "oshioki-laptop-setup" in result.stdout
             preserved()
             # Run the helper inside an actual user-domain same-label job.
@@ -299,7 +288,7 @@ def main():
                 time.sleep(0.1)
             assert "outside this user's GUI login session" in output
             assert "SYNTHETIC_PRIVATE_SENTINEL" not in output
-            assert native.read_job() == custom_before
+            assert native.job() == custom_before
             preserved()
             print("Stopped, custom and same-label background services remained unchanged")
         finally:
