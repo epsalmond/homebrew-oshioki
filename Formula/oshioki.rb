@@ -200,6 +200,17 @@ class Oshioki < Formula
               if result.returncode:
                   raise RefreshError("agent restart failed")
 
+          def icon(self, path):
+              try:
+                  result = subprocess.run(["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                          timeout=5, check=False)
+              except (OSError, subprocess.TimeoutExpired):
+                  raise RefreshError("new agent bundle icon could not be verified") from None
+              dimensions = re.findall(rb"pixel(?:Width|Height):\s*([0-9]+)", result.stdout)
+              if result.returncode or len(dimensions) != 2 or any(int(value) <= 0 for value in dimensions):
+                  raise RefreshError("new agent bundle icon is invalid")
+
           def signature(self, bundle):
               try:
                   result = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)],
@@ -228,6 +239,7 @@ class Oshioki < Formula
           icon = (bundle / "Contents/Resources/Oshioki.icns").read_bytes()
           if len(icon) <= 8 or icon[:4] != b"icns" or int.from_bytes(icon[4:8], "big") != len(icon):
               raise RefreshError("new agent bundle icon is invalid")
+          native.icon(bundle / "Contents/Resources/Oshioki.icns")
           native.signature(bundle)
           resolved = executable.resolve(strict=True)
           if resolved.parent != opt.resolve(strict=True) / "Oshioki.app/Contents/MacOS":

@@ -35,6 +35,9 @@ class Fake:
         self.calls.append("disabled")
         return self.override
 
+    def icon(self, path):
+        self.calls.append("icon")
+
     def signature(self, bundle):
         self.calls.append("signature")
         if self.bad_signature:

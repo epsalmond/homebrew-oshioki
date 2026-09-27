@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import struct
+import zlib
 import time
 from refresh_source import load
 
@@ -81,6 +83,19 @@ def main():
         fixture_c.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
         agent = root / "sleeping-agent"
         run(["clang", "-o", str(agent), str(fixture_c)])
+        # A real, decodable icon produced by Apple's tool; synthetic icon bytes
+        # with a valid header are insufficient bundle validation.
+        iconset = root / "Oshioki.iconset"
+        iconset.mkdir()
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        for size in (16, 32, 128, 256, 512):
+            png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+                   + chunk(b"IDAT", zlib.compress((b"\0" + b"\x40\x60\x80\xff" * size) * size))
+                   + chunk(b"IEND", b""))
+            (iconset / f"icon_{size}x{size}.png").write_bytes(png)
+        icon = root / "Oshioki.icns"
+        run(["/usr/bin/iconutil", "-c", "icns", "-o", str(icon), str(iconset)])
         plist = root / "com.oshioki.agent.plist"
         contents = {"Label": module.LABEL,
                     "ProgramArguments": [str(opt / "Oshioki.app/Contents/MacOS/oshioki-agent")],
@@ -103,7 +118,7 @@ def main():
                     "CFBundleIconFile": "Oshioki", "CFBundlePackageType": "APPL",
                     "CFBundleVersion": version, "CFBundleShortVersionString": version}
             (app / "Info.plist").write_bytes(plistlib.dumps(info))
-            (app / "Resources/Oshioki.icns").write_bytes(b"icns\0\0\0\x0ctest")
+            shutil.copy2(icon, app / "Resources/Oshioki.icns")
             run(["/usr/bin/codesign", "--force", "--sign", "-", str(stage / "Oshioki.app")])
             for name in ("oshioki", "oshioki-agent", "install-oshioki-hook", "oshioki-laptop-setup",
                          "oshioki-browser-relay"):
@@ -153,6 +168,8 @@ def main():
             assert native.read_job()["pid"] == old["pid"]
             write_formula("0.3.1")
             result = brew("install", "--build-bottle", "fixture/refresh/oshioki")
+            assert native.read_job()["pid"] == old["pid"], "bottle construction must skip refresh"
+            result = brew("postinstall", "fixture/refresh/oshioki")
             current = refreshed(old, result)
             # Homebrew's postinstall temporary HOME must not influence lookup.
             assert not (home / "Library/LaunchAgents").exists()
