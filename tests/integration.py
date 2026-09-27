@@ -37,7 +37,10 @@ def wait_job(native, running=True):
     while time.monotonic() < deadline:
         job = native.read_job()
         if job and bool(job["pid"] and job["pid"] > 0) == running:
-            return job
+            # launchd can publish the PID while it still executes xpcproxy.
+            # Wait for exec before treating the fixture as running.
+            if not running or (job["program"] and native.executable(job["pid"]) == Path(job["program"]).resolve()):
+                return job
         time.sleep(0.1)
     raise AssertionError("fixture service did not reach expected state")
 
@@ -67,6 +70,7 @@ def main():
         env.update(HOME=str(home), HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_INSTALL_FROM_API="1",
                    HOMEBREW_NO_INSTALL_CLEANUP="1", HOMEBREW_DEVELOPER="1")
         prefix = Path(run(["brew", "--prefix"]).stdout.strip())
+        cellar = Path(run(["brew", "--cellar"]).stdout.strip()).resolve()
         opt = prefix / "opt/oshioki"
         assert not opt.exists(), "runner already has Oshioki installed"
         formula = tap / "Formula/oshioki.rb"
@@ -169,7 +173,10 @@ def main():
             assert old_path.exists()
             # Remove only the old app bundle while its process is alive and
             # its keg remains installed: exercise the actual upgrade command.
-            shutil.rmtree(old_path.parents[2])
+            old_app = (opt / "Oshioki.app").resolve(strict=True)
+            assert old_app == cellar / "oshioki/0.1.13/Oshioki.app", "unexpected fixture app location"
+            assert old_path == old_app / "Contents/MacOS/oshioki-agent", "fixture has not executed its agent"
+            shutil.rmtree(old_app)
             assert not old_path.exists()
             assert native.read_job()["pid"] == old["pid"]
             write_formula("0.3.1")
