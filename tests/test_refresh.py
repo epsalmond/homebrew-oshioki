@@ -206,6 +206,10 @@ class RefreshTests(unittest.TestCase):
             "\t\tNATS_PASS =", "\tprogram = /stable/agent\n\t\tNATS_PASS =")
         with self.assertRaises(refresh.RefreshError):
             refresh.parse_service(hidden, target)
+        unclosed = (target + " = {\n\tstate = running\n\tprogram = /stable/agent\n"
+                    "\targuments = {\n\t\t/stable/agent\n\tpid = 100\n}\n")
+        with self.assertRaises(refresh.RefreshError):
+            refresh.parse_service(unclosed, target)
 
     def test_list_parser_rejects_duplicate_labels_and_invalid_pid(self):
         self.assertEqual(refresh.parse_list("PID Status Label\n100 0 com.oshioki.agent\n"), [100])

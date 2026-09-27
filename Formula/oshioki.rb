@@ -91,10 +91,29 @@ class Oshioki < Formula
           if not lines or lines[0] != target + " = {" or lines[-1] != "}":
               raise RefreshError("launchd service metadata is malformed")
           critical = {name: [] for name in ("program", "state", "pid")}
-          for line in lines[1:-1]:
+          depth = 1
+          for index, line in enumerate(lines[1:], start=1):
+              if not line:
+                  continue
+              if line.strip("\t") == "}":
+                  if line != "\t" * (depth - 1) + "}" or depth < 1:
+                      raise RefreshError("launchd service metadata is malformed")
+                  depth -= 1
+                  if depth == 0 and index != len(lines) - 1:
+                      raise RefreshError("launchd service metadata is malformed")
+                  continue
+              indent = len(line) - len(line.lstrip("\t"))
+              if depth < 1 or indent != depth:
+                  raise RefreshError("launchd service metadata is malformed")
               match = re.fullmatch(r"\s*(program|state|pid) = (.*)", line)
               if match:
+                  if depth != 1:
+                      raise RefreshError("launchd service metadata is ambiguous")
                   critical[match[1]].append(match[2])
+              if re.fullmatch(r"\t+[^\t]+ = \{", line):
+                  depth += 1
+          if depth:
+              raise RefreshError("launchd service metadata is malformed")
           if any(len(values) > 1 for values in critical.values()):
               # Multiline argument/environment values must never impersonate a
               # program, state or PID. Ambiguous dumps are left untouched.
