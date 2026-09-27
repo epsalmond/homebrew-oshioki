@@ -47,6 +47,10 @@ jobs:
       - name: Bottle the formula
         run: |
           # Fresh auto-tap picks up the pushed formula, not this checkout.
+          # Keep Sonoma support when a dependency no longer has a bottle.
+          # Preinstall dependencies normally; the named formula's source graph
+          # avoids dependency metadata from the previous release's bottle.
+          brew install --only-dependencies --build-from-source epsalmond/oshioki/oshioki
           brew install --build-bottle epsalmond/oshioki/oshioki
           brew test epsalmond/oshioki/oshioki
           # --skip-relocation: the tap bottles arm64 only and Apple silicon
