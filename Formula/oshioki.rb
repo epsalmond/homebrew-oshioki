@@ -92,7 +92,7 @@ class Oshioki < Formula
               raise RefreshError("launchd service metadata is malformed")
           critical = {name: [] for name in ("program", "state", "pid")}
           for line in lines[1:-1]:
-              match = re.fullmatch(r"\s*(program|state|pid) = (.*)", line)
+              match = re.fullmatch(r"\t(program|state|pid) = (.*)", line)
               if match:
                   critical[match[1]].append(match[2])
           if any(len(values) > 1 for values in critical.values()):

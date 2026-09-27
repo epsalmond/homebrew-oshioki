@@ -183,6 +183,15 @@ class RefreshTests(unittest.TestCase):
         target, output = self.service_dump(state="waiting", pid=None)
         self.assertIsNone(refresh.parse_service(output, target)["pid"])
 
+    def test_service_parser_ignores_nested_coalition_state(self):
+        target, output = self.service_dump()
+        output = output.replace("\tpid = 100\n", "\tcoalition = {\n\t\tstate = active\n\t}\n\tpid = 100\n")
+        self.assertEqual(refresh.parse_service(output, target)["pid"], 100)
+        deeper_fake = output.replace("\tpid = 100\n", "").replace(
+            "\t\tNATS_PASS =", "\t\tpid = 100\n\t\tNATS_PASS =")
+        with self.assertRaises(refresh.RefreshError):
+            refresh.parse_service(deeper_fake, target)
+
     def test_service_parser_rejects_forged_environment_or_argument_metadata(self):
         target, output = self.service_dump()
         for field in ("program = /evil/agent", "state = running", "pid = 999"):
