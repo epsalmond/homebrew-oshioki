@@ -56,7 +56,8 @@ def main():
     assert native.job() is None, "refuse to replace an existing production label"
     assert not native.disabled(uid), "refuse to replace an existing disabled override"
     target = f"gui/{uid}/{module.LABEL}"
-    user_target = f"user/{uid}/{module.LABEL}"
+    background_label = f"dev.oshioki.ci.background-refresh.{os.getpid()}"
+    user_target = f"user/{uid}/{background_label}"
     tap = Path(run(["brew", "--repository"]).stdout.strip()) / "Library/Taps/fixture/homebrew-refresh"
     assert not tap.exists()
     with tempfile.TemporaryDirectory(prefix="oshioki-refresh-ci-") as temp:
@@ -269,14 +270,19 @@ def main():
             assert native.job() == custom_before
             assert "oshioki-laptop-setup" in result.stdout
             preserved()
-            # Run the helper inside an actual user-domain same-label job.
+            # Run the helper inside an actual Background user-domain job.
+            # Its separate launcher label avoids the GUI/user label collision;
+            # the helper still queries only the production GUI agent label.
             # `asuser` does not reliably change Aqua's bootstrap context.
             background_plist = root / "background.plist"
             background_log = root / "background.log"
             helper = opt / "libexec/refresh-agent.py"
-            background = dict(contents, ProgramArguments=[contents["ProgramArguments"][0],
+            background = dict(contents, Label=background_label,
+                              LimitLoadToSessionType="Background",
+                              ProgramArguments=[contents["ProgramArguments"][0],
                               sys.executable, str(helper), str(opt), "0.3.1", str(background_log)])
             background_plist.write_bytes(plistlib.dumps(background))
+            background_plist.chmod(0o600)
             run(["/bin/launchctl", "bootstrap", f"user/{uid}", str(background_plist)])
             deadline = time.monotonic() + 10
             output = ""
@@ -290,7 +296,7 @@ def main():
             assert "SYNTHETIC_PRIVATE_SENTINEL" not in output
             assert native.job() == custom_before
             preserved()
-            print("Stopped, custom and same-label background services remained unchanged")
+            print("Stopped and custom GUI services remained unchanged; Background refresh skipped")
         finally:
             run(["/bin/launchctl", "enable", target], success=False)
             run(["/bin/launchctl", "bootout", target], success=False)
