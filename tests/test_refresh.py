@@ -171,6 +171,7 @@ class RefreshTests(unittest.TestCase):
                 output = f'disabled services = {{\n\t"com.oshioki.agent" => {token}\n}}'
                 self.assertEqual(refresh.parse_disabled(output), expected)
         self.assertFalse(refresh.parse_disabled('disabled services = {\n}'))
+        self.assertTrue(refresh.parse_disabled('disabled services = {\n\t"com.oshioki.agent" => disabled\n\t}'))
         self.assertFalse(refresh.parse_disabled('disabled services = {\n"com.other.agent" => disabled\n}'))
         self.assertFalse(refresh.parse_disabled('disabled services = {\n"com.oshioki.agent.custom" => disabled\n}'))
 

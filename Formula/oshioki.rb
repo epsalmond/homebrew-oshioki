@@ -125,7 +125,7 @@ class Oshioki < Formula
 
       def parse_disabled(output):
           lines = output.strip().splitlines()
-          if not lines or lines[0] != "disabled services = {" or lines[-1] != "}":
+          if not lines or lines[0] != "disabled services = {" or lines[-1].strip() != "}":
               raise RefreshError("launchd disabled-service metadata is malformed")
           found = []
           values = {"disabled": True, "enabled": False, "true": True, "false": False}
