@@ -79,7 +79,13 @@ class Oshioki < Formula
       LABEL = "com.oshioki.agent"
 
       class RefreshError(Exception):
-          pass
+          def __init__(self, message, stage=None, code=None):
+              super().__init__(message)
+              self.stage, self.code = stage, code
+
+          def __str__(self):
+              message = super().__str__()
+              return message if self.stage is None else f"{message} (stage={self.stage}, code={self.code})"
 
       class Native:
           """Read selected loaded-job metadata; never traverse its environment."""
@@ -110,10 +116,12 @@ class Oshioki < Formula
               try:
                   result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                           timeout=timeout, check=False)
-              except (OSError, subprocess.TimeoutExpired):
-                  raise RefreshError("launchd metadata is unavailable") from None
+              except OSError as error:
+                  raise RefreshError("launchd metadata is unavailable", args[1], error.errno) from None
+              except subprocess.TimeoutExpired:
+                  raise RefreshError("launchd metadata is unavailable", args[1], "timeout") from None
               if result.returncode:
-                  raise RefreshError("launchd metadata is unavailable")
+                  raise RefreshError("launchd metadata is unavailable", args[1], result.returncode)
               return result.stdout.decode("utf-8", "strict").strip()
 
           def context(self, uid):
@@ -133,39 +141,51 @@ class Oshioki < Formula
                   result = subprocess.run([sys.executable, __file__, "--job"],
                                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                           timeout=timeout, check=False)
+                  decoded = json.loads(result.stdout) if result.stdout else None
                   if result.returncode:
-                      raise RefreshError("launchd metadata is unavailable")
-                  return json.loads(result.stdout)
-              except (OSError, ValueError, subprocess.TimeoutExpired):
-                  raise RefreshError("launchd metadata is unavailable") from None
+                      stages = {"allocate_request", "allocate_label", "insert_request", "launch_msg",
+                                "response_errno", "response_type", "Program", "ProgramArguments",
+                                "PID", "Disabled", "argument_type", "load_library"}
+                      if isinstance(decoded, dict) and decoded.get("stage") in stages:
+                          code = decoded.get("code")
+                          if code is None or isinstance(code, int):
+                              raise RefreshError("launchd metadata is unavailable", decoded["stage"], code)
+                      raise RefreshError("launchd metadata is unavailable", "job_child", result.returncode)
+                  return decoded
+              except OSError as error:
+                  raise RefreshError("launchd metadata is unavailable", "job_child", error.errno) from None
+              except (ValueError, subprocess.TimeoutExpired):
+                  raise RefreshError("launchd metadata is unavailable", "job_child", "timeout_or_invalid_json") from None
 
           def read_job(self):
               lib = self.lib
               request = lib.launch_data_alloc(1)
               if not request:
-                  raise RefreshError("launchd metadata is unavailable")
+                  raise RefreshError("launchd metadata is unavailable", "allocate_request", ctypes.get_errno())
               response = None
               try:
                   value = lib.launch_data_new_string(LABEL.encode())
                   if not value:
-                      raise RefreshError("launchd metadata is unavailable")
+                      raise RefreshError("launchd metadata is unavailable", "allocate_label", ctypes.get_errno())
                   if not lib.launch_data_dict_insert(request, value, b"GetJob"):
                       lib.launch_data_free(value)
-                      raise RefreshError("launchd metadata is unavailable")
+                      raise RefreshError("launchd metadata is unavailable", "insert_request", ctypes.get_errno())
+                  ctypes.set_errno(0)
                   response = lib.launch_msg(request)
                   if not response:
-                      raise RefreshError("launchd metadata is unavailable")
+                      raise RefreshError("launchd metadata is unavailable", "launch_msg", ctypes.get_errno())
                   kind = lib.launch_data_get_type(response)
                   if kind == 9:
-                      if lib.launch_data_get_errno(response) == errno.ESRCH:
+                      response_errno = lib.launch_data_get_errno(response)
+                      if response_errno == errno.ESRCH:
                           return None
-                      raise RefreshError("launchd metadata is unavailable")
+                      raise RefreshError("launchd metadata is unavailable", "response_errno", response_errno)
                   if kind != 1:
-                      raise RefreshError("launchd metadata is unavailable")
+                      raise RefreshError("launchd metadata is unavailable", "response_type", kind)
                   def field(name, kind):
                       item = lib.launch_data_dict_lookup(response, name)
                       if item and lib.launch_data_get_type(item) != kind:
-                          raise RefreshError("launchd metadata is malformed")
+                          raise RefreshError("launchd metadata is malformed", name.decode("ascii"), lib.launch_data_get_type(item))
                       return item
                   program = field(b"Program", 7)
                   if not program:
@@ -173,7 +193,7 @@ class Oshioki < Formula
                       if arguments and lib.launch_data_array_get_count(arguments):
                           program = lib.launch_data_array_get_index(arguments, 0)
                           if lib.launch_data_get_type(program) != 7:
-                              raise RefreshError("launchd metadata is malformed")
+                              raise RefreshError("launchd metadata is malformed", "argument_type", lib.launch_data_get_type(program))
                   pid = field(b"PID", 4)
                   disabled = field(b"Disabled", 6)
                   return {"program": os.fsdecode(lib.launch_data_get_string(program)) if program else None,
@@ -307,7 +327,11 @@ class Oshioki < Formula
               try:
                   print(json.dumps(Native().read_job()))
                   return 0
-              except (RefreshError, OSError, AttributeError):
+              except RefreshError as error:
+                  print(json.dumps({"stage": error.stage, "code": error.code}))
+                  return 1
+              except (OSError, AttributeError):
+                  print(json.dumps({"stage": "load_library", "code": None}))
                   return 1
           if len(sys.argv) != 3 or sys.platform != "darwin":
               return 1
