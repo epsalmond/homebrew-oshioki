@@ -123,6 +123,27 @@ class Oshioki < Formula
           return {"program": header["program"], "state": header["state"], "pid": pid}
 
 
+      def parse_disabled(output):
+          lines = output.strip().splitlines()
+          if not lines or lines[0] != "disabled services = {" or lines[-1] != "}":
+              raise RefreshError("launchd disabled-service metadata is malformed")
+          found = []
+          values = {"disabled": True, "enabled": False, "true": True, "false": False}
+          for line in lines[1:-1]:
+              if not line.strip():
+                  continue
+              match = re.fullmatch(r'\s*"([^"\r\n]+)"\s*=>\s*([a-z]+)\s*,?', line)
+              if not match:
+                  raise RefreshError("launchd disabled-service metadata is malformed")
+              if match[1] == LABEL:
+                  if match[2] not in values:
+                      raise RefreshError("launchd disabled-service state is unknown")
+                  found.append(values[match[2]])
+          if len(found) > 1:
+              raise RefreshError("launchd disabled-service metadata is ambiguous")
+          return found[0] if found else False
+
+
       class Native:
           def __init__(self):
               self.lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -153,7 +174,7 @@ class Oshioki < Formula
 
           def disabled(self, uid):
               output = self.command(["/bin/launchctl", "print-disabled", f"gui/{uid}"])
-              return bool(re.search(r'"com\.oshioki\.agent"\s*=>\s*true', output))
+              return parse_disabled(output)
 
           def job(self, timeout=5):
               target = f"gui/{os.getuid()}/{LABEL}"

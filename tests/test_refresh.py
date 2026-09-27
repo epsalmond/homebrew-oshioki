@@ -165,6 +165,25 @@ class RefreshTests(unittest.TestCase):
             native.command = command
             self.assertEqual(native.context(501), expected)
 
+    def test_disabled_parser_supports_current_and_historical_formats(self):
+        for token, expected in (("disabled", True), ("true", True), ("enabled", False), ("false", False)):
+            with self.subTest(token=token):
+                output = f'disabled services = {{\n\t"com.oshioki.agent" => {token}\n}}'
+                self.assertEqual(refresh.parse_disabled(output), expected)
+        self.assertFalse(refresh.parse_disabled('disabled services = {\n}'))
+        self.assertFalse(refresh.parse_disabled('disabled services = {\n"com.other.agent" => disabled\n}'))
+        self.assertFalse(refresh.parse_disabled('disabled services = {\n"com.oshioki.agent.custom" => disabled\n}'))
+
+    def test_disabled_parser_rejects_unknown_duplicate_and_malformed_state(self):
+        for output in ('disabled services = {\n"com.oshioki.agent" => unknown\n}',
+                       'disabled services = {\n"com.oshioki.agent" => true\n"com.oshioki.agent" => false\n}',
+                       'changed header = {\n"com.oshioki.agent" => enabled\n}',
+                       'disabled services = {\n"com.oshioki.agent" => disabled',
+                       'disabled services = {\nPRIVATE SENTINEL\n}'):
+            with self.assertRaises(refresh.RefreshError) as error:
+                refresh.parse_disabled(output)
+            self.assertNotIn("PRIVATE", str(error.exception))
+
     def service_dump(self, state="running", pid=100):
         target = "gui/501/com.oshioki.agent"
         output = (target + " = {\n\tactive count = 1\n\tpath = /fixture/agent.plist\n"
