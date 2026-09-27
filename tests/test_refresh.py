@@ -4,6 +4,7 @@ from pathlib import Path
 import plistlib
 import tempfile
 import unittest
+from unittest.mock import patch
 from refresh_source import load
 
 refresh = load()
@@ -148,6 +149,67 @@ class RefreshTests(unittest.TestCase):
         self.icon.unlink()
         self.assertEqual(self.run_refresh(), 1)
         self.assertFalse(self.restarts())
+
+    def test_malformed_plist_root_never_restarts(self):
+        self.plist.write_bytes(plistlib.dumps(["malformed"]))
+        self.assertEqual(self.run_refresh(), 1)
+        self.assertFalse(self.restarts())
+
+    def test_native_queries_only_selected_loaded_fields(self):
+        class MetadataLibrary:
+            def __init__(self):
+                self.lookups = []
+                self.freed = []
+                self.values = {1: (1, None), 2: (7, refresh.LABEL), 3: (1, None),
+                               4: (2, [5]), 5: (7, "/stable/agent"), 6: (4, 100), 7: (6, False)}
+
+            def launch_data_alloc(self, kind): return 1
+            def launch_data_new_string(self, text):
+                self.assert_label = text
+                return 2
+            def launch_data_dict_insert(self, request, value, key):
+                self.request_key = key
+                return True
+            def launch_msg(self, request): return 3
+            def launch_data_get_type(self, value): return self.values[value][0]
+            def launch_data_dict_lookup(self, response, key):
+                self.lookups.append(key)
+                # Any environment traversal, enumeration, or serialization is
+                # deliberately unavailable; only these four lookups are valid.
+                return {b"Program": None, b"ProgramArguments": 4, b"PID": 6, b"Disabled": 7}[key]
+            def launch_data_array_get_count(self, value): return len(self.values[value][1])
+            def launch_data_array_get_index(self, value, index):
+                if index != 0: raise AssertionError("read unneeded arguments")
+                return self.values[value][1][index]
+            def launch_data_get_string(self, value): return self.values[value][1].encode()
+            def launch_data_get_integer(self, value): return self.values[value][1]
+            def launch_data_get_bool(self, value): return self.values[value][1]
+            def launch_data_free(self, value): self.freed.append(value)
+
+        native = refresh.Native.__new__(refresh.Native)
+        native.lib = MetadataLibrary()
+        self.assertEqual(native.read_job(), {"program": "/stable/agent", "pid": 100, "disabled": False})
+        self.assertEqual(native.lib.lookups, [b"Program", b"ProgramArguments", b"PID", b"Disabled"])
+        self.assertEqual(native.lib.freed, [3, 1])
+        self.assertEqual(native.lib.request_key, b"GetJob")
+
+    def test_native_requires_aqua_and_current_uid(self):
+        native = refresh.Native.__new__(refresh.Native)
+        for name, uid, expected in (("Aqua", "501", True), ("Background", "501", False),
+                                    ("System", "0", False), ("Aqua", "502", False)):
+            def command(args, timeout=5):
+                return name if args[-1] == "managername" else uid
+            native.command = command
+            self.assertEqual(native.context(501), expected)
+
+    def test_native_rejects_undecodable_icon_even_when_sips_exits_zero(self):
+        native = refresh.Native.__new__(refresh.Native)
+        class Result:
+            returncode = 0
+            stdout = b"pixelWidth: <nil>\npixelHeight: <nil>\n"
+        with patch.object(refresh.subprocess, "run", return_value=Result()):
+            with self.assertRaises(refresh.RefreshError):
+                native.icon(self.icon)
 
     def test_missing_executable_and_bad_signature(self):
         exe = self.opt / "Oshioki.app/Contents/MacOS/oshioki-agent"

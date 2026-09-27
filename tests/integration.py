@@ -216,6 +216,15 @@ def main():
             result = brew("reinstall", "--force-bottle", "fixture/refresh/oshioki")
             current = refreshed(current, result)
             print("Bottle reinstall refreshed the production label")
+            # Disabled overrides remain untouched even for a running job.
+            run(["/bin/launchctl", "disable", target])
+            assert native.disabled(uid)
+            result = brew("postinstall", "fixture/refresh/oshioki")
+            assert native.read_job() == current
+            assert native.disabled(uid)
+            assert "Oshioki agent refreshed" not in result.stdout
+            preserved()
+            run(["/bin/launchctl", "enable", target])
             # No service: another bottle reinstall may write only keg helper.
             run(["/bin/launchctl", "bootout", target])
             result = brew("reinstall", "--force-bottle", "fixture/refresh/oshioki")
@@ -268,6 +277,7 @@ def main():
             preserved()
             print("Stopped, custom and same-label background services remained unchanged")
         finally:
+            run(["/bin/launchctl", "enable", target], success=False)
             run(["/bin/launchctl", "bootout", target], success=False)
             run(["/bin/launchctl", "bootout", user_target], success=False)
             run(["brew", "uninstall", "--force", "fixture/refresh/oshioki"], env=env, success=False)

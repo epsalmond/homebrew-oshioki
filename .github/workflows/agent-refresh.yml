@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: agent-refresh-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deterministic:
     runs-on: ubuntu-24.04
