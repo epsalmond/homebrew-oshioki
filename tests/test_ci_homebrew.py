@@ -17,12 +17,12 @@ class HostedHomebrewTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.environment = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                             "RUNNER_TEMP": str(self.root)}
 
     def fixture(self, layout, owner=None, installed=True):
-        prefix = self.root / layout
+        prefix = (self.root / layout).resolve()
         (prefix / "bin").mkdir(parents=True)
         marker = prefix / "var/homebrew/linked/openssl@1.1"
         marker.parent.mkdir(parents=True)
@@ -480,6 +480,41 @@ class HostedHomebrewTests(unittest.TestCase):
             self.assertEqual(1, relevant.count(invocation), workflow)
             self.assertLess(relevant.index(invocation), relevant.index("brew install"), job)
             self.assertNotIn("--overwrite", text, workflow)
+
+    def aliased_fixture_root(self):
+        physical = self.root / "private/var/folders/runner with spaces"
+        physical.mkdir(parents=True)
+        alias = self.root / "var"
+        alias.symlink_to(self.root / "private/var", target_is_directory=True)
+        self.root = alias / "folders/runner with spaces"
+        self.environment["RUNNER_TEMP"] = str(self.root)
+        return physical.resolve()
+
+    def test_var_private_var_alias_has_physical_inventory_and_receipt_paths(self):
+        physical = self.aliased_fixture_root()
+        prefix, executable, _, brew, inventory = self.noop_unlink_fixture("opt/homebrew", ["c_rehash"])
+        state = self.root / "alias-state.json"
+        prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertEqual(physical / "opt/homebrew", prefix)
+        self.assertTrue(all(Path(item).is_relative_to(prefix) for item in inventory))
+        self.assertEqual(str(prefix), json.loads(state.read_text())["prefix"])
+        self.assertFalse(os.path.lexists(executable))
+        self.assertFalse(os.path.lexists(prefix / "bin/c_rehash"))
+
+    def test_var_alias_still_rejects_wrong_physical_export_target(self):
+        physical = self.aliased_fixture_root()
+        prefix, executable, _, brew, _ = self.noop_unlink_fixture("opt/homebrew", ["c_rehash"])
+        wrong = physical / "foreign/bin/c_rehash"
+        wrong.parent.mkdir(parents=True)
+        wrong.write_text("wrong physical target must remain")
+        link = prefix / "bin/c_rehash"
+        link.unlink()
+        link.symlink_to(wrong)
+        with self.assertRaisesRegex(ValueError, "fallback|owner"):
+            prepare(self.root / "alias-wrong.json", brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(executable.is_symlink())
+        self.assertTrue(link.is_symlink())
+        self.assertEqual("wrong physical target must remain", wrong.read_text())
 
 
 if __name__ == "__main__":
