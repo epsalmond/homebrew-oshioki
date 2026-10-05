@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: python3 -m unittest discover -s tests -v
 
   homebrew-postinstall:
@@ -25,10 +28,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       # The declarative post-install DSL is required. Do not rely on the
       # runner image's older Homebrew or disable its normal sandbox.
       - run: brew update
-      - run: brew install python@3.14
+      - run: brew install python@3.14 gnupg
       - run: python3 -m unittest discover -s tests -v
       - name: Production-label package replacement, bottle pour and reinstall
         run: python3 tests/integration.py

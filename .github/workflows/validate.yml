@@ -13,17 +13,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  candidate-signing-tests:
+    name: Candidate signing tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m unittest discover -s tests -v
+
+  release-identity:
+    runs-on: ubuntu-24.04
+    outputs:
+      signed_release: ${{ steps.policy.outputs.signed_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: policy
+        name: Determine prospective release policy
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, sys
+          sys.path.insert(0, 'scripts')
+          from signing import formula_policy
+          policy = formula_policy(pathlib.Path('trusted-base/Formula/oshioki.rb').read_text(),
+                                  pathlib.Path('Formula/oshioki.rb').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write(f'signed_release={str(policy["signed_release"]).lower()}\n')
+          PY
+      - name: Verify submitted release identity and archive checksum
+        if: steps.policy.outputs.signed_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 -c 'from pathlib import Path; import sys; sys.path.insert(0,"scripts"); from release_candidate import identity; print("v" + identity(Path("Formula/oshioki.rb").read_text())["version"])')"
+          python3 scripts/release_candidate.py fetch "$tag" "$RUNNER_TEMP/upstream"
+          python3 scripts/release_candidate.py verify-formula Formula/oshioki.rb \
+            "$RUNNER_TEMP/upstream" .github/signing
+
   bottle-round-trip:
+    needs: release-identity
+    if: needs.release-identity.outputs.signed_release == 'false'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
           path: tap
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: epsalmond/oshioki
           ref: main
           path: source
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -59,6 +114,7 @@ jobs:
           brew install --only-dependencies --build-from-source epsalmond/oshioki-ci/oshioki
           brew install --build-bottle epsalmond/oshioki-ci/oshioki
           brew test epsalmond/oshioki-ci/oshioki
+
       - name: Bottle, pour, and test
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -69,3 +125,40 @@ jobs:
           # Current Homebrew requires explicit developer mode for local bottles.
           HOMEBREW_DEVELOPER=1 brew install ./oshioki--*.bottle*.tar.gz
           brew test epsalmond/oshioki-ci/oshioki
+
+  release-round-trip:
+    needs: release-identity
+    if: needs.release-identity.outputs.signed_release == 'true'
+    runs-on: macos-14
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Update Homebrew for the declarative post-install DSL
+        run: brew update
+      - name: Test the submitted release formula and bottle
+        run: |
+          set -euo pipefail
+          brew tap-new --no-git epsalmond/oshioki
+          formula="$(brew --repository epsalmond/oshioki)/Formula/oshioki.rb"
+          cp Formula/oshioki.rb "$formula"
+          cmp Formula/oshioki.rb "$formula"
+          # The submitted bottle block is exercised unchanged first.
+          brew install --only-dependencies --build-from-source epsalmond/oshioki/oshioki
+          brew install --force-bottle epsalmond/oshioki/oshioki
+          brew test epsalmond/oshioki/oshioki
+          brew uninstall --force epsalmond/oshioki/oshioki
+          # Then round-trip the exact submitted archive/hash through a new
+          # local bottle. No source/main URL or version substitution occurs.
+          brew install --build-bottle epsalmond/oshioki/oshioki
+          brew test epsalmond/oshioki/oshioki
+          cmp Formula/oshioki.rb "$formula"
+          brew bottle --no-rebuild --skip-relocation --json epsalmond/oshioki/oshioki
+          bottles=(oshioki--*.bottle*.tar.gz)
+          test "${#bottles[@]}" -eq 1
+          brew uninstall --force epsalmond/oshioki/oshioki
+          brew trust --formula epsalmond/oshioki/oshioki
+          HOMEBREW_DEVELOPER=1 brew install "./${bottles[0]}"
+          brew test epsalmond/oshioki/oshioki

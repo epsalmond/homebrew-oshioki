@@ -1,0 +1,64 @@
+name: trusted signing
+
+on:
+  pull_request_target:
+    branches: [main]
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  trusted-pr-signatures:
+    name: Trusted PR signatures
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # pull_request_target loads this definition from the trusted base.
+      # Check out ONLY that base; PR objects are fetched as inert Git data.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify all introduced signatures and prospective formula policy
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head:refs/review/head"
+          test "$(git rev-parse refs/review/head)" = "$HEAD"
+          # No PR checkout, import, formula evaluation, tests or build here.
+          python3 scripts/signing.py --repo . --trust .github/signing commits "$BASE" "$HEAD"
+
+  trusted-tap-tag:
+    name: Trusted tap checkpoint tag
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify main-owned annotated checkpoint and formula identity
+        env:
+          TAG: ${{ github.ref_name }}
+          OBJECT: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import os; from scripts.signing import stable_version; stable_version(os.environ["TAG"])'
+          git fetch --no-tags origin "refs/heads/main:refs/remotes/origin/main" "refs/tags/$TAG:refs/tags/$TAG"
+          python3 scripts/signing.py --repo . --trust .github/signing tag "$TAG" --tap --expected-object "$OBJECT"
