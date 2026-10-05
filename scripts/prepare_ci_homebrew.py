@@ -102,13 +102,14 @@ def prepare(state, brew=command, environment=None, platform=None):
         if keg.resolve(strict=True) != keg or node_identity(keg.stat()) != keg_identity:
             raise ValueError("verified old keg changed before fallback")
 
-        def listed_versions():
-            return [version for line in brew("list", "--versions", "openssl@1.1").splitlines()
-                    if line.split() and line.split()[0] == "openssl@1.1" for version in line.split()[1:]]
+        def listed_versions(formula="openssl@1.1"):
+            return [version for line in brew("list", "--versions", formula).splitlines()
+                    if line.split() and line.split()[0] == formula for version in line.split()[1:]]
         installed_now = listed_versions()
         if current_owner[1] not in installed_now:
             raise ValueError("verified old version is no longer installed before fallback")
-        plan = {"keg": str(keg), "candidates": [], "removed": [], "planned_removal": None}
+        plan = {"keg": str(keg), "candidates": [], "planned_remove": [], "preserved_modern": [],
+                "removed": [], "planned_removal": None}
         record["fallback"] = plan
         for line in sorted(set(brew("list", "--verbose", "openssl@1.1").splitlines())):
             source = Path(line)
@@ -136,21 +137,41 @@ def prepare(state, brew=command, environment=None, platform=None):
             if not os.path.lexists(destination):
                 candidate["status"] = "absent"
                 continue
-            if not destination.is_symlink() or destination.resolve(strict=True) != target:
+            if not destination.is_symlink():
                 raise ValueError("fallback prefix node has an unexpected owner or export mapping")
-            candidate.update({"status": "candidate", "link_identity": node_identity(destination.lstat()),
+            live_target = destination.resolve(strict=True)
+            if live_target == target:
+                candidate["status"] = "candidate"
+                plan["planned_remove"].append(str(relative))
+            else:
+                try:
+                    modern_parts = live_target.relative_to(prefix / "Cellar/openssl@3").parts
+                except ValueError as error:
+                    raise ValueError("fallback prefix node has an unexpected owner or export mapping") from error
+                if not modern_parts or modern_parts[0] not in listed_versions("openssl@3"):
+                    raise ValueError("fallback modern version is not installed")
+                modern_keg = prefix / "Cellar/openssl@3" / modern_parts[0]
+                modern_export = modern_keg / relative
+                if (modern_keg.resolve(strict=True) != modern_keg or not live_target.is_relative_to(modern_keg)
+                        or not live_target.is_file() or modern_export.resolve(strict=True) != live_target):
+                    raise ValueError("fallback modern link has an unexpected export mapping")
+                candidate.update({"status": "preserved-modern", "target": str(live_target),
+                                  "source_identity": node_identity(live_target.stat()),
+                                  "modern_version": modern_parts[0], "modern_keg": str(modern_keg),
+                                  "modern_keg_identity": node_identity(modern_keg.stat())})
+                plan["preserved_modern"].append(str(relative))
+            candidate.update({"link_identity": node_identity(destination.lstat()),
                               "link_target": os.readlink(destination)})
         if not any(item["path"] == "bin/openssl" and item["status"] == "candidate" for item in plan["candidates"]):
             raise ValueError("fallback inventory does not bind the canonical openssl export")
         snapshot()  # Entire preflight plan is durable before any fallback unlink.
-        for candidate in plan["candidates"]:
-            if candidate["status"] != "candidate":
-                continue
+
+        def verified_descriptor(candidate):
             destination = prefix / candidate["path"]
-            plan["planned_removal"] = candidate["path"]
-            snapshot()  # Log this removal intent before revalidation/mutation.
-            if current_owner[1] not in listed_versions() or node_identity(keg.stat()) != keg_identity:
-                raise ValueError("old keg/version changed during fallback")
+            if candidate["status"] == "preserved-modern":
+                if (candidate["modern_version"] not in listed_versions("openssl@3")
+                        or node_identity(Path(candidate["modern_keg"]).stat()) != candidate["modern_keg_identity"]):
+                    raise ValueError("preserved modern keg/version changed during fallback")
             descriptor = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 parent = destination.parent
@@ -163,13 +184,37 @@ def prepare(state, brew=command, environment=None, platform=None):
                         or destination.resolve(strict=True) != Path(candidate["target"])
                         or node_identity(Path(candidate["target"]).stat()) != candidate["source_identity"]):
                     raise ValueError("fallback link or exported owner changed after preflight")
-                os.unlink(destination.name, dir_fd=descriptor)  # Symlink node only.
+            except Exception:
+                os.close(descriptor)
+                raise
+            return descriptor
+
+        def validate_preserved():
+            for preserved in plan["candidates"]:
+                if preserved["status"] == "preserved-modern":
+                    os.close(verified_descriptor(preserved))
+
+        for candidate in plan["candidates"]:
+            if candidate["status"] != "candidate":
+                continue
+            destination = prefix / candidate["path"]
+            plan["planned_removal"] = candidate["path"]
+            snapshot()  # Log this removal intent before revalidation/mutation.
+            if current_owner[1] not in listed_versions() or node_identity(keg.stat()) != keg_identity:
+                raise ValueError("old keg/version changed during fallback")
+            validate_preserved()  # Mixed-prefix modern links must stay unchanged.
+            descriptor = verified_descriptor(candidate)
+            try:
+                os.unlink(destination.name, dir_fd=descriptor)  # Old symlink node only.
             finally:
                 os.close(descriptor)
             candidate["status"] = "removed"
             plan["removed"].append(candidate["path"])
             plan["planned_removal"] = None
             snapshot()
+        validate_preserved()
+        if any(os.path.lexists(prefix / path) for path in plan["planned_remove"]):
+            raise ValueError("old planned link removal did not remain complete")
     if conflict:
         try:
             brew("unlink", "openssl@1.1")

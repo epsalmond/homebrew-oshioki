@@ -201,6 +201,9 @@ class HostedHomebrewTests(unittest.TestCase):
             if args == ("list", "--verbose", "openssl@1.1"):
                 calls.append(args)
                 return "\n".join(inventory)
+            if args == ("list", "--versions", "openssl@3"):
+                calls.append(args)
+                return ""  # Modern targets require explicit installed evidence.
             return original(*args)
         return prefix, executable, calls, brew, inventory
 
@@ -221,7 +224,7 @@ class HostedHomebrewTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(prefix / "bin/c_rehash"))
         self.assertEqual({"bin/openssl", "bin/c_rehash"}, set(json.loads(state.read_text())["fallback"]["removed"]))
 
-    def test_fallback_rejects_mixed_modern_outside_regular_or_mismapped_nodes_before_removal(self):
+    def test_fallback_rejects_unverified_modern_outside_regular_or_mismapped_nodes_before_removal(self):
         for mode in ("modern", "outside", "regular", "mismapped"):
             with self.subTest(mode=mode):
                 prefix, executable, _, brew, _ = self.noop_unlink_fixture(mode, ["c_rehash"])
@@ -319,6 +322,140 @@ class HostedHomebrewTests(unittest.TestCase):
             prepare(self.root / "omitted.json", brew=brew, environment=self.environment, platform="darwin")
         self.assertTrue(executable.is_symlink())
         self.assertTrue((prefix / "bin/c_rehash").is_symlink())
+
+    def mixed_fixture(self, layout):
+        prefix, executable, calls, original, _ = self.noop_unlink_fixture(layout, ["c_rehash"])
+        modern = prefix / "Cellar/openssl@3/3.6.3/bin/c_rehash"
+        modern.parent.mkdir(parents=True)
+        modern.write_text("installed modern CLI fixture")
+        preserved = prefix / "bin/c_rehash"
+        preserved.unlink()
+        preserved.symlink_to(Path("../Cellar/openssl@3/3.6.3/bin/c_rehash"))
+
+        def brew(*args):
+            if args == ("list", "--versions", "openssl@3"):
+                calls.append(args)
+                return "openssl@3 3.6.3\n"
+            return original(*args)
+        return prefix, executable, preserved, calls, brew
+
+    def test_actual_mixed_prefix_removes_only_old_canonical_and_preserves_installed_modern(self):
+        _, executable, modern, _, brew = self.mixed_fixture("actual-mixed")
+        before = modern.lstat()
+        state = self.root / "actual-mixed.json"
+        prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertFalse(os.path.lexists(executable))
+        self.assertEqual((before.st_ino, before.st_ctime_ns), (modern.lstat().st_ino, modern.lstat().st_ctime_ns))
+        plan = json.loads(state.read_text())["fallback"]
+        self.assertEqual(["bin/openssl"], plan["planned_remove"])
+        self.assertEqual(["bin/c_rehash"], plan["preserved_modern"])
+        self.assertEqual(["bin/openssl"], plan["removed"])
+
+    def test_inverse_mixed_prefix_does_not_trigger_old_cleanup(self):
+        prefix, executable, calls, brew = self.fixture("inverse", "openssl@3")
+        old = prefix / "Cellar/openssl@1.1/fixture-version/bin/c_rehash"
+        old.parent.mkdir(parents=True)
+        old.write_text("old CLI fixture")
+        other = prefix / "bin/c_rehash"
+        other.symlink_to(old)
+        prepare(self.root / "inverse.json", brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(executable.is_symlink())
+        self.assertTrue(other.is_symlink())
+        self.assertNotIn(("unlink", "openssl@1.1"), calls)
+
+    def test_unlisted_modern_version_is_rejected_before_old_removal(self):
+        _, executable, modern, _, original = self.mixed_fixture("modern-unlisted")
+
+        def brew(*args):
+            if args == ("list", "--versions", "openssl@3"):
+                return "openssl@3 3.6.5\n"
+            return original(*args)
+        with self.assertRaisesRegex(ValueError, "installed|version|owner"):
+            prepare(self.root / "modern-unlisted.json", brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(executable.is_symlink())
+        self.assertTrue(modern.is_symlink())
+
+    def test_preserved_modern_race_or_version_change_aborts_before_old_removal(self):
+        for mode in ("link", "version"):
+            with self.subTest(mode=mode):
+                _, executable, modern, _, original = self.mixed_fixture("modern-race-" + mode)
+                state = self.root / f"modern-race-{mode}.json"
+                changed = False
+                replace = os.replace
+
+                def race_after_receipt(source, destination):
+                    nonlocal changed
+                    replace(source, destination)
+                    if not changed and json.loads(state.read_text()).get("fallback", {}).get("planned_removal"):
+                        changed = True
+                        if mode == "link":
+                            modern.unlink()
+                            modern.write_text("raced regular CLI stays untouched")
+
+                def brew(*args):
+                    if changed and mode == "version" and args == ("list", "--versions", "openssl@3"):
+                        return "openssl@3 different-version\n"
+                    return original(*args)
+                with patch("prepare_ci_homebrew.os.replace", side_effect=race_after_receipt):
+                    with self.assertRaisesRegex(ValueError, "changed|version|modern|fallback"):
+                        prepare(state, brew=brew, environment=self.environment, platform="darwin")
+                self.assertTrue(changed)
+                self.assertTrue(executable.is_symlink())
+                self.assertTrue(os.path.lexists(modern))
+
+    def test_brew_partial_old_removal_leaves_only_remaining_old_cli_in_plan(self):
+        prefix, executable, _, original, _ = self.noop_unlink_fixture("partial", ["c_rehash"])
+
+        def brew(*args):
+            if args == ("unlink", "openssl@1.1"):
+                (prefix / "bin/c_rehash").unlink()
+            return original(*args)
+        state = self.root / "partial.json"
+        prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertFalse(os.path.lexists(executable))
+        plan = json.loads(state.read_text())["fallback"]
+        self.assertEqual(["bin/openssl"], plan["planned_remove"])
+        self.assertEqual(["bin/openssl"], plan["removed"])
+
+    def test_modern_change_after_old_removal_fails_the_completion_check(self):
+        _, executable, modern, _, brew = self.mixed_fixture("modern-postcheck")
+        state = self.root / "modern-postcheck.json"
+        changed = False
+        replace = os.replace
+
+        def race_after_receipt(source, destination):
+            nonlocal changed
+            replace(source, destination)
+            if not changed and json.loads(state.read_text()).get("fallback", {}).get("removed"):
+                changed = True
+                modern.unlink()
+                modern.write_text("raced modern file remains intact")
+        with patch("prepare_ci_homebrew.os.replace", side_effect=race_after_receipt):
+            with self.assertRaisesRegex(ValueError, "changed|fallback"):
+                prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(changed)
+        self.assertFalse(os.path.lexists(executable))
+        self.assertEqual("raced modern file remains intact", modern.read_text())
+        self.assertEqual("unlink-failed", json.loads(state.read_text())["action"])
+
+    def test_separate_mixed_plan_is_logged_before_any_old_removal(self):
+        _, executable, _, _, brew = self.mixed_fixture("mixed-plan-log")
+        state = self.root / "mixed-plan-log.json"
+        replace = os.replace
+        witnessed = False
+
+        def inspect_receipt(source, destination):
+            nonlocal witnessed
+            replace(source, destination)
+            plan = json.loads(state.read_text()).get("fallback", {})
+            if plan.get("planned_removal"):
+                self.assertEqual(["bin/openssl"], plan["planned_remove"])
+                self.assertEqual(["bin/c_rehash"], plan["preserved_modern"])
+                self.assertTrue(executable.is_symlink())
+                witnessed = True
+        with patch("prepare_ci_homebrew.os.replace", side_effect=inspect_receipt):
+            prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(witnessed)
 
     def test_personal_or_nonmac_environment_fails_before_homebrew(self):
         def brew(*args):
