@@ -34,6 +34,8 @@ jobs:
       # The declarative post-install DSL is required. Do not rely on the
       # runner image's older Homebrew or disable its normal sandbox.
       - run: brew update
+      - name: Isolate hosted image OpenSSL links
+        run: python3 scripts/prepare_ci_homebrew.py "$RUNNER_TEMP/homebrew-openssl-state.json"
       - run: brew install python@3.14 gnupg
       - run: python3 -m unittest discover -s tests -v
       - name: Production-label package replacement, bottle pour and reinstall

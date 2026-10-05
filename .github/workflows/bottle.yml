@@ -35,10 +35,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Update Homebrew and install public provenance verifier
-        run: |
-          brew update
-          brew install gnupg
+      - name: Update Homebrew
+        run: brew update
+      - name: Isolate hosted image OpenSSL links
+        run: python3 scripts/prepare_ci_homebrew.py "$RUNNER_TEMP/homebrew-openssl-state.json"
+      - name: Install public provenance verifier
+        run: brew install gnupg
       - name: Verify release and generate candidate
         env:
           GH_TOKEN: ${{ github.token }}

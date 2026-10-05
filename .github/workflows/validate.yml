@@ -84,6 +84,8 @@ jobs:
           python-version: "3.12"
       - name: Update Homebrew for the declarative post-install DSL
         run: brew update
+      - name: Isolate hosted image OpenSSL links
+        run: python3 tap/scripts/prepare_ci_homebrew.py "$RUNNER_TEMP/homebrew-openssl-state.json"
       - name: Build the current Mac package
         working-directory: source
         run: |
@@ -138,6 +140,8 @@ jobs:
           persist-credentials: false
       - name: Update Homebrew for the declarative post-install DSL
         run: brew update
+      - name: Isolate hosted image OpenSSL links
+        run: python3 scripts/prepare_ci_homebrew.py "$RUNNER_TEMP/homebrew-openssl-state.json"
       - name: Test the submitted release formula and bottle
         run: |
           set -euo pipefail
