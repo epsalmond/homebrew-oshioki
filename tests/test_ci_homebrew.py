@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from prepare_ci_homebrew import prepare
@@ -182,6 +183,142 @@ class HostedHomebrewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected linked"):
             prepare(self.root / "regular-marker.json", brew=brew, environment=self.environment, platform="darwin")
         self.assertNotIn(("unlink", "openssl@1.1"), calls)
+
+    def noop_unlink_fixture(self, layout, additional=None):
+        prefix, executable, calls, original = self.fixture(layout, "openssl@1.1")
+        (prefix / "var/homebrew/linked/openssl@1.1").unlink()
+        keg = prefix / "Cellar/openssl@1.1/fixture-version"
+        for name in additional or ():
+            source = keg / "bin" / name
+            source.write_text("known old CLI fixture")
+            (prefix / "bin" / name).symlink_to(source)
+        inventory = [str(path) for path in sorted((keg / "bin").iterdir())]
+
+        def brew(*args):
+            if args == ("unlink", "openssl@1.1"):
+                calls.append(args)
+                return "Unlinking 0 symlinks"
+            if args == ("list", "--verbose", "openssl@1.1"):
+                calls.append(args)
+                return "\n".join(inventory)
+            return original(*args)
+        return prefix, executable, calls, brew, inventory
+
+    def test_fallback_removes_exact_canonical_link_left_by_noop_brew_unlink(self):
+        _, executable, calls, brew, _ = self.noop_unlink_fixture("fallback-one")
+        state = self.root / "fallback-one.json"
+        prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertFalse(os.path.lexists(executable))
+        self.assertIn(("unlink", "openssl@1.1"), calls)
+        record = json.loads(state.read_text())
+        self.assertEqual(["bin/openssl"], record["fallback"]["removed"])
+
+    def test_fallback_removes_multiple_exact_old_exported_cli_symlinks(self):
+        prefix, executable, _, brew, _ = self.noop_unlink_fixture("fallback-many", ["c_rehash"])
+        state = self.root / "fallback-many.json"
+        prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertFalse(os.path.lexists(executable))
+        self.assertFalse(os.path.lexists(prefix / "bin/c_rehash"))
+        self.assertEqual({"bin/openssl", "bin/c_rehash"}, set(json.loads(state.read_text())["fallback"]["removed"]))
+
+    def test_fallback_rejects_mixed_modern_outside_regular_or_mismapped_nodes_before_removal(self):
+        for mode in ("modern", "outside", "regular", "mismapped"):
+            with self.subTest(mode=mode):
+                prefix, executable, _, brew, _ = self.noop_unlink_fixture(mode, ["c_rehash"])
+                other = prefix / "bin/c_rehash"
+                other.unlink()
+                if mode == "regular":
+                    other.write_text("unrecognized regular file")
+                else:
+                    if mode == "modern":
+                        target = prefix / "Cellar/openssl@3/another-version/bin/c_rehash"
+                    elif mode == "outside":
+                        target = self.root / "foreign/bin/c_rehash"
+                    else:
+                        target = prefix / "Cellar/openssl@1.1/fixture-version/bin/openssl"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if mode != "mismapped":
+                        target.write_text("preserved foreign target")
+                    other.symlink_to(target)
+                with self.assertRaisesRegex(ValueError, "fallback|export|owner"):
+                    prepare(self.root / f"{mode}.json", brew=brew, environment=self.environment, platform="darwin")
+                self.assertTrue(executable.is_symlink())
+                self.assertTrue(os.path.lexists(other))
+
+    def test_fallback_rejects_malicious_inventory_and_prefix_parent_escape(self):
+        for mode in ("inventory", "parent"):
+            with self.subTest(mode=mode):
+                prefix, executable, _, brew, inventory = self.noop_unlink_fixture(mode)
+                if mode == "inventory":
+                    outside = self.root / "outside-source/openssl"
+                    outside.parent.mkdir()
+                    outside.write_text("not an installed keg file")
+                    inventory.append(str(outside))
+                else:
+                    executable.unlink()
+                    executable.symlink_to(prefix / "Cellar/openssl@1.1/fixture-version/bin/openssl")
+                    moved = self.root / "moved-bin"
+                    (prefix / "bin").rename(moved)
+                    (prefix / "bin").symlink_to(moved, target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "fallback|prefix|keg"):
+                    prepare(self.root / f"{mode}.json", brew=brew, environment=self.environment, platform="darwin")
+                self.assertTrue(executable.is_symlink())
+
+    def test_fallback_logs_plan_before_removal_and_rejects_raced_symlink(self):
+        _, executable, _, brew, _ = self.noop_unlink_fixture("race")
+        state = self.root / "race.json"
+        output = io.StringIO()
+        replace = os.replace
+        changed = False
+
+        def race_after_receipt(source, destination):
+            nonlocal changed
+            replace(source, destination)
+            record = json.loads(state.read_text())
+            if not changed and record.get("fallback", {}).get("planned_removal") == "bin/openssl":
+                changed = True
+                executable.unlink()
+                executable.write_text("preserve raced regular file")
+        with contextlib.redirect_stdout(output), patch("prepare_ci_homebrew.os.replace", side_effect=race_after_receipt):
+            with self.assertRaisesRegex(ValueError, "changed|race|fallback"):
+                prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(changed)
+        self.assertEqual("preserve raced regular file", executable.read_text())
+        self.assertIn('"planned_removal": "bin/openssl"', output.getvalue())
+
+    def test_absent_canonical_never_invokes_fallback_inventory(self):
+        _, _, calls, brew = self.fixture("absent-no-fallback", installed=False)
+        prepare(self.root / "absent-no-fallback.json", brew=brew, environment=self.environment, platform="darwin")
+        self.assertFalse(any("--verbose" in args for args in calls))
+
+    def test_fallback_rejects_version_change_after_plan_without_removing_link(self):
+        _, executable, _, original, _ = self.noop_unlink_fixture("version-race")
+        state = self.root / "version-race.json"
+        changed = False
+        replace = os.replace
+
+        def race_after_receipt(source, destination):
+            nonlocal changed
+            replace(source, destination)
+            if json.loads(state.read_text()).get("fallback", {}).get("planned_removal"):
+                changed = True
+
+        def brew(*args):
+            if changed and args == ("list", "--versions", "openssl@1.1"):
+                return "openssl@1.1 unexpected-version\n"
+            return original(*args)
+        with patch("prepare_ci_homebrew.os.replace", side_effect=race_after_receipt):
+            with self.assertRaisesRegex(ValueError, "changed"):
+                prepare(state, brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(executable.is_symlink())
+
+    def test_fallback_rejects_missing_canonical_export_before_other_removals(self):
+        prefix, executable, _, brew, inventory = self.noop_unlink_fixture("omitted", ["c_rehash"])
+        inventory[:] = [name for name in inventory if not name.endswith("/openssl")]
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            prepare(self.root / "omitted.json", brew=brew, environment=self.environment, platform="darwin")
+        self.assertTrue(executable.is_symlink())
+        self.assertTrue((prefix / "bin/c_rehash").is_symlink())
 
     def test_personal_or_nonmac_environment_fails_before_homebrew(self):
         def brew(*args):
