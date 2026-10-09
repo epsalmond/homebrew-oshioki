@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Isolate the hosted Mac image's known OpenSSL 1.1 link conflict.
 
-The runner is disposable: record its prior state, then keep dependency OpenSSL
-3 available through the tests rather than relinking the image's old keg.
+The runner is disposable: record its prior state, then keep dependency modern
+OpenSSL available through the tests rather than relinking the image's old keg.
 """
 import argparse
 import json
@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import stat
+
+MODERN_FORMULAE = ("openssl@3", "openssl@4")
 
 
 def command(*args):
@@ -45,7 +47,7 @@ def prepare(state, brew=command, environment=None, platform=None):
         if executable.is_symlink():
             try:
                 parts = executable.resolve(strict=True).relative_to(prefix / "Cellar").parts
-                if len(parts) == 4 and parts[2:] == ("bin", "openssl") and parts[0] in ("openssl@1.1", "openssl@3"):
+                if len(parts) == 4 and parts[2:] == ("bin", "openssl") and parts[0] in ("openssl@1.1", *MODERN_FORMULAE):
                     return parts[0], parts[1]
             except (ValueError, FileNotFoundError):
                 pass
@@ -81,7 +83,7 @@ def prepare(state, brew=command, environment=None, platform=None):
               "openssl_link_before": os.readlink(executable) if executable.is_symlink() else None,
               "linked_keg_before": os.readlink(linked) if linked.is_symlink() else None,
               "action": "planned-unlink-openssl@1.1" if conflict else "unchanged",
-              "restore": "Not restored: this disposable hosted runner is discarded after the job; OpenSSL 3 remains available to dependencies."}
+              "restore": "Not restored: this disposable hosted runner is discarded after the job; modern OpenSSL remains available to dependencies."}
     def snapshot():
         with tempfile.NamedTemporaryFile(mode="w", dir=state.parent, delete=False) as stream:
             temporary = Path(stream.name)
@@ -145,18 +147,22 @@ def prepare(state, brew=command, environment=None, platform=None):
                 plan["planned_remove"].append(str(relative))
             else:
                 try:
-                    modern_parts = live_target.relative_to(prefix / "Cellar/openssl@3").parts
+                    cellar_parts = live_target.relative_to(prefix / "Cellar").parts
                 except ValueError as error:
                     raise ValueError("fallback prefix node has an unexpected owner or export mapping") from error
-                if not modern_parts or modern_parts[0] not in listed_versions("openssl@3"):
+                if len(cellar_parts) < 2 or cellar_parts[0] not in MODERN_FORMULAE:
+                    raise ValueError("fallback prefix node has an unexpected owner or export mapping")
+                modern_formula, modern_parts = cellar_parts[0], cellar_parts[1:]
+                if modern_parts[0] not in listed_versions(modern_formula):
                     raise ValueError("fallback modern version is not installed")
-                modern_keg = prefix / "Cellar/openssl@3" / modern_parts[0]
+                modern_keg = prefix / "Cellar" / modern_formula / modern_parts[0]
                 modern_export = modern_keg / relative
                 if (modern_keg.resolve(strict=True) != modern_keg or not live_target.is_relative_to(modern_keg)
                         or not live_target.is_file() or modern_export.resolve(strict=True) != live_target):
                     raise ValueError("fallback modern link has an unexpected export mapping")
                 candidate.update({"status": "preserved-modern", "target": str(live_target),
                                   "source_identity": node_identity(live_target.stat()),
+                                  "modern_formula": modern_formula,
                                   "modern_version": modern_parts[0], "modern_keg": str(modern_keg),
                                   "modern_keg_identity": node_identity(modern_keg.stat())})
                 plan["preserved_modern"].append(str(relative))
@@ -169,7 +175,7 @@ def prepare(state, brew=command, environment=None, platform=None):
         def verified_descriptor(candidate):
             destination = prefix / candidate["path"]
             if candidate["status"] == "preserved-modern":
-                if (candidate["modern_version"] not in listed_versions("openssl@3")
+                if (candidate["modern_version"] not in listed_versions(candidate["modern_formula"])
                         or node_identity(Path(candidate["modern_keg"]).stat()) != candidate["modern_keg_identity"]):
                     raise ValueError("preserved modern keg/version changed during fallback")
             descriptor = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
