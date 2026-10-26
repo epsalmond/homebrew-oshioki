@@ -510,8 +510,17 @@ class HostedHomebrewTests(unittest.TestCase):
             pieces = re.split(r"(?m)^  ([a-z][\w-]+):\n", text.split("jobs:\n", 1)[1])
             jobs = dict(zip(pieces[1::2], pieces[2::2]))
             relevant = jobs[job]
+            self.assertIn("runs-on: macos-15\n", relevant, job)
             self.assertEqual(1, relevant.count(invocation), workflow)
             self.assertLess(relevant.index(invocation), relevant.index("brew install"), job)
+            # The generated formula has no bottle yet. Resolve its dependencies
+            # normally, then build Oshioki separately rather than forcing source
+            # dependency installs or asking for a nonexistent candidate bottle.
+            if job != "homebrew-postinstall":
+                self.assertIn("brew install --only-dependencies epsalmond/", relevant, job)
+                self.assertNotIn("--build-from-source", relevant, job)
+                self.assertNotIn("--only-dependencies --force-bottle", relevant, job)
+                self.assertIn("brew install --build-bottle epsalmond/", relevant, job)
             self.assertNotIn("--overwrite", text, workflow)
 
     def aliased_fixture_root(self):

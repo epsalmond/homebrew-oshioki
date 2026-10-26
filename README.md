@@ -24,9 +24,12 @@ repository/version/tag object/source commit and Mac archive, Debian package,
 and SHA256SUMS hashes. The archive's source revision remains a consistency check.
 It builds the generated formula in a local `epsalmond/oshioki` tap, tests its
 bottle, and emits the `signed-formula-candidate` artifact. It never pushes
-tap commits. Set `upload` only when ready to publish the bottle; that separate
-job can upload absent assets or accept byte-identical retries. Conflicting
-published bytes fail without replacement.
+tap commits. Candidate and round-trip builds use ARM64 macOS 15 (Sequoia),
+with normal Homebrew dependency bottle selection. New candidates require exactly
+one `arm64_sequoia` bottle; the existing published formula/bottle stays unchanged
+until a verified candidate is submitted. Set `upload` only when ready to publish
+the bottle; that separate job can upload absent assets or accept byte-identical
+retries. Conflicting published bytes fail without replacement.
 
 Download the artifact, verify `SHA256SUMS`, and review `provenance.json` and
 `formula.patch`. Copy its complete `Formula/oshioki.rb` into a branch based
