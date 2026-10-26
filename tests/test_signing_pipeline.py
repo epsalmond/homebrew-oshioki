@@ -120,17 +120,17 @@ class PipelineTest(unittest.TestCase):
         self.installed.write_bytes((self.output / "Formula/oshioki.rb").read_bytes())
 
     def bottle(self, text=None):
-        self.bottle_archive = self.root / "oshioki--0.4.1.arm64_sonoma.bottle.tar.gz"
+        self.bottle_archive = self.root / "oshioki--0.4.1.arm64_sequoia.bottle.tar.gz"
         self.write_tar(self.bottle_archive, {"oshioki/0.4.1/.brew/oshioki.rb":
                                             self.installed.read_text() if text is None else text})
         self.bottle_data = {"epsalmond/oshioki/oshioki": {
             "formula": {"name": "oshioki", "pkg_version": "0.4.1", "tap_git_path": "Formula/oshioki.rb"},
             "bottle": {"root_url": "https://github.com/epsalmond/oshioki/releases/download/v0.4.1",
                        "cellar": "any_skip_relocation", "rebuild": 0,
-                       "tags": {"arm64_sonoma": {"local_filename": self.bottle_archive.name,
+                       "tags": {"arm64_sequoia": {"local_filename": self.bottle_archive.name,
                                                  "filename": self.bottle_archive.name.replace("oshioki--", "oshioki-"),
                                                  "sha256": sha256(self.bottle_archive)}}}}}
-        self.bottle_json = self.root / "oshioki--0.4.1.arm64_sonoma.bottle.json"
+        self.bottle_json = self.root / "oshioki--0.4.1.arm64_sequoia.bottle.json"
         self.bottle_json.write_text(json.dumps(self.bottle_data))
 
     def test_expected_signed_tag_passes(self):
@@ -363,6 +363,9 @@ class PipelineTest(unittest.TestCase):
         final = (self.output / "Formula/oshioki.rb").read_text()
         self.assertEqual(1, final.count("bottle do"))
         self.assertIn(sha256(self.bottle_archive), final)
+        self.assertIn("arm64_sequoia:", final)
+        provenance = json.loads((self.output / "provenance.json").read_text())
+        self.assertEqual("oshioki-0.4.1.arm64_sequoia.bottle.tar.gz", provenance["bottle"]["filename"])
         self.assertTrue((self.output / "formula.patch").is_file())
         for line in (self.output / "SHA256SUMS").read_text().splitlines():
             digest, name = line.split()
@@ -380,6 +383,28 @@ class PipelineTest(unittest.TestCase):
         self.bottle_data["epsalmond/oshioki/oshioki"]["formula"]["pkg_version"] = "0.3.1"
         self.bottle_json.write_text(json.dumps(self.bottle_data))
         with self.assertRaisesRegex(ValueError, "identity"):
+            finish(self.installed, self.output, self.bottle_json, self.bottle_archive)
+
+    def test_finish_rejects_sonoma_or_additional_bottle_tags(self):
+        self.candidate()
+        self.bottle()
+        tags = self.bottle_data["epsalmond/oshioki/oshioki"]["bottle"]["tags"]
+        entry = tags["arm64_sequoia"]
+        for invalid in ({"arm64_sonoma": entry},
+                        {"arm64_sequoia": entry, "arm64_sonoma": entry}):
+            with self.subTest(tags=list(invalid)):
+                self.bottle_data["epsalmond/oshioki/oshioki"]["bottle"]["tags"] = invalid
+                self.bottle_json.write_text(json.dumps(self.bottle_data))
+                with self.assertRaisesRegex(ValueError, "expected one arm64_sequoia bottle"):
+                    finish(self.installed, self.output, self.bottle_json, self.bottle_archive)
+
+    def test_finish_rejects_sonoma_filename_under_sequoia_tag(self):
+        self.candidate()
+        self.bottle()
+        entry = self.bottle_data["epsalmond/oshioki/oshioki"]["bottle"]["tags"]["arm64_sequoia"]
+        entry["filename"] = entry["filename"].replace("arm64_sequoia", "arm64_sonoma")
+        self.bottle_json.write_text(json.dumps(self.bottle_data))
+        with self.assertRaisesRegex(ValueError, "filename"):
             finish(self.installed, self.output, self.bottle_json, self.bottle_archive)
 
     def upload_fixture(self, existing=None):
@@ -406,6 +431,17 @@ class PipelineTest(unittest.TestCase):
             upload(self.output)
         self.assertTrue(any(call[:3] == ("gh", "release", "upload") for call in calls))
         self.assertFalse(any("--clobber" in call or "delete-asset" in call for call in calls))
+
+    def test_upload_rejects_sonoma_asset_name_before_network(self):
+        calls, fake = self.upload_fixture()
+        provenance_path = self.output / "provenance.json"
+        provenance = json.loads(provenance_path.read_text())
+        provenance["bottle"]["filename"] = provenance["bottle"]["filename"].replace("arm64_sequoia", "arm64_sonoma")
+        provenance_path.write_text(json.dumps(provenance))
+        with patch("upload_bottle.run", side_effect=fake):
+            with self.assertRaisesRegex(ValueError, "unexpected bottle asset name"):
+                upload(self.output)
+        self.assertEqual([], calls)
 
     def test_upload_identical_is_noop(self):
         # Create the fixture's bottle first; deterministic tar bytes are read

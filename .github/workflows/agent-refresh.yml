@@ -24,7 +24,7 @@ jobs:
       - run: python3 -m unittest discover -s tests -v
 
   homebrew-postinstall:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4

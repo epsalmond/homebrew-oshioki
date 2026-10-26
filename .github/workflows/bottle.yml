@@ -23,7 +23,7 @@ concurrency:
 jobs:
   candidate:
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       TAG: ${{ inputs.tag }}
@@ -56,7 +56,7 @@ jobs:
           formula="$(brew --repository epsalmond/oshioki)/Formula/oshioki.rb"
           cp "$RUNNER_TEMP/candidate/Formula/oshioki.rb" "$formula"
           python3 scripts/release_candidate.py assert-candidate "$formula" "$RUNNER_TEMP/candidate"
-          brew install --only-dependencies --build-from-source epsalmond/oshioki/oshioki
+          brew install --only-dependencies epsalmond/oshioki/oshioki
           brew install --build-bottle epsalmond/oshioki/oshioki
           brew test epsalmond/oshioki/oshioki
           python3 scripts/release_candidate.py assert-candidate "$formula" "$RUNNER_TEMP/candidate"

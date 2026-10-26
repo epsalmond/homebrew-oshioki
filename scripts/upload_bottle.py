@@ -15,7 +15,7 @@ def upload(candidate):
     tag = provenance["upstream"]["tag"]
     version = stable_version(tag)
     name = provenance["bottle"]["filename"]
-    if not re.fullmatch(rf"oshioki-{re.escape(version)}\.arm64_sonoma\.bottle(?:\.[1-9][0-9]*)?\.tar\.gz", name):
+    if not re.fullmatch(rf"oshioki-{re.escape(version)}\.arm64_sequoia\.bottle(?:\.[1-9][0-9]*)?\.tar\.gz", name):
         raise ValueError("unexpected bottle asset name")
     archive = candidate / name
     if sha256(archive) != provenance["bottle"]["sha256"]:

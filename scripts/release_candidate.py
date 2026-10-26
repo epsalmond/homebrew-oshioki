@@ -151,15 +151,15 @@ def finish(formula, output, bottle_json, archive):
     if bottle["root_url"] != root_url or bottle["cellar"] != "any_skip_relocation":
         raise ValueError("bottle root URL or relocation policy mismatch")
     tags = bottle["tags"]
-    if set(tags) != {"arm64_sonoma"}:
-        raise ValueError("expected one arm64_sonoma bottle")
-    entry = tags["arm64_sonoma"]
+    if set(tags) != {"arm64_sequoia"}:
+        raise ValueError("expected one arm64_sequoia bottle")
+    entry = tags["arm64_sequoia"]
     rebuild = bottle["rebuild"]
     if not isinstance(rebuild, int) or rebuild < 0:
         raise ValueError("invalid bottle rebuild")
     suffix = f'.bottle{("." + str(rebuild)) if rebuild else ""}.tar.gz'
-    expected_local = f"oshioki--{version}.arm64_sonoma{suffix}"
-    expected_remote = f"oshioki-{version}.arm64_sonoma{suffix}"
+    expected_local = f"oshioki--{version}.arm64_sequoia{suffix}"
+    expected_remote = f"oshioki-{version}.arm64_sequoia{suffix}"
     if archive.name != expected_local or entry["local_filename"] != expected_local or entry["filename"] != expected_remote:
         raise ValueError("bottle filename differs from candidate version")
     if sha256(archive) != entry["sha256"]:
@@ -176,7 +176,7 @@ def finish(formula, output, bottle_json, archive):
     block = f'  bottle do\n    root_url "{root_url}"\n'
     if rebuild:
         block += f"    rebuild {rebuild}\n"
-    block += f'    sha256 cellar: :any_skip_relocation, arm64_sonoma: "{entry["sha256"]}"\n  end\n'
+    block += f'    sha256 cellar: :any_skip_relocation, arm64_sequoia: "{entry["sha256"]}"\n  end\n'
     text = re.sub(r'(^  sha256 "[0-9a-f]{64}"\n)', lambda match: match[0] + "\n" + block,
                   formula.read_text(), count=1, flags=re.M)
     (output / "Formula/oshioki.rb").write_text(text)
